@@ -86,7 +86,7 @@ with st.sidebar:
 """)
     st.divider()
     st.markdown("**Version:** 2.0 — Universal")
-    st.markdown("**LLM:** Azure OpenAI GPT-4o-mini")
+    st.markdown(f"**LLM:** `{AzureOpenAIConfig.DEPLOYMENT}`")
     st.markdown("**Approach:** Shift-Left Compliance Intelligence")
 
 # ---------------------------------------------------------------------------
@@ -149,7 +149,7 @@ st.divider()
 # ---------------------------------------------------------------------------
 # STEP 2 — Extract Structured Intelligence
 # ---------------------------------------------------------------------------
-st.markdown('<div class="step-header">Step 2 — Extract Enforcement Intelligence (GPT-4o)</div>',
+st.markdown(f'<div class="step-header">Step 2 — Extract Enforcement Intelligence ({AzureOpenAIConfig.DEPLOYMENT})</div>',
             unsafe_allow_html=True)
 
 if st.session_state.document_text is None:
@@ -161,7 +161,7 @@ else:
                                 use_container_width=True)
 
     if extract_btn:
-        with st.spinner("GPT-4o extracting enforcement intelligence..."):
+        with st.spinner(f"{AzureOpenAIConfig.DEPLOYMENT} extracting enforcement intelligence..."):
             try:
                 st.session_state.extracted_data = extract_enforcement_data(
                     st.session_state.document_text
@@ -263,7 +263,7 @@ else:
 
     if analyse_btn:
         with st.spinner(
-            "GPT-4o running two-layer gap analysis (Policy + Control)... "
+            f"{AzureOpenAIConfig.DEPLOYMENT} running two-layer gap analysis (Policy + Control)... "
             "This may take 30–60 seconds."
         ):
             try:

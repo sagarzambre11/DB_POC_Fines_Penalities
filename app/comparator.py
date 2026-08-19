@@ -19,7 +19,7 @@ downstream operational consequence.
 """
 
 import json
-from openai import AzureOpenAI
+from openai import AzureOpenAI, OpenAI
 from config import AzureOpenAIConfig, AppConfig
 from app.inventory import inventory_to_combined_prompt_text
 
@@ -193,11 +193,21 @@ def compare_findings_to_inventory(
             "Please update your .env file."
         )
 
-    client = AzureOpenAI(
-        azure_endpoint=AzureOpenAIConfig.ENDPOINT,
-        api_key=AzureOpenAIConfig.API_KEY,
-        api_version=AzureOpenAIConfig.API_VERSION,
-    )
+    # Use standard OpenAI client for Azure AI Foundry (services.ai.azure.com)
+    # endpoints which expose an OpenAI-compatible /openai/v1/ surface and do
+    # not require the ?api-version query parameter that AzureOpenAI always adds.
+    _endpoint = AzureOpenAIConfig.ENDPOINT.rstrip("/")
+    if "services.ai.azure.com" in _endpoint:
+        client = OpenAI(
+            base_url=f"{_endpoint}/openai/v1/",
+            api_key=AzureOpenAIConfig.API_KEY,
+        )
+    else:
+        client = AzureOpenAI(
+            azure_endpoint=AzureOpenAIConfig.ENDPOINT,
+            api_key=AzureOpenAIConfig.API_KEY,
+            api_version=AzureOpenAIConfig.API_VERSION,
+        )
 
     enforcement_json_str = json.dumps(extracted_enforcement, indent=2)
     inventory_text = inventory_to_combined_prompt_text(inventory)
@@ -213,12 +223,10 @@ def compare_findings_to_inventory(
             {"role": "system", "content": COMPARISON_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
-        max_tokens=AppConfig.MAX_TOKENS_COMPARISON,
-        temperature=AppConfig.TEMPERATURE,
-        response_format={"type": "json_object"},
+        max_completion_tokens=AppConfig.MAX_TOKENS_COMPARISON,
     )
 
-    raw_content = response.choices[0].message.content.strip()
+    raw_content = (response.choices[0].message.content or "").strip()
 
     try:
         comparison = json.loads(raw_content)

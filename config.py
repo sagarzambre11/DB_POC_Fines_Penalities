@@ -41,7 +41,7 @@ class AppConfig:
 
     # LLM generation parameters
     MAX_TOKENS_EXTRACTION: int = 4096
-    MAX_TOKENS_COMPARISON: int = 4096
+    MAX_TOKENS_COMPARISON: int = 16384  # gap analysis output is large (one entry per inventory item)
     TEMPERATURE: float = 0.0  # deterministic for compliance use-cases
 
     # Coverage classification labels
