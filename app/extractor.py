@@ -3,8 +3,10 @@ app/extractor.py
 ----------------
 Step 2: LLM-based structured JSON extraction from regulatory enforcement documents.
 
-Uses Azure OpenAI GPT-4o to extract 13 standardised fields from the raw document text
-and returns a validated Python dict matching the PoC JSON schema.
+Uses Azure OpenAI GPT-4o to extract standardised fields from ANY enforcement document
+(FCA, DFS, SEC, MAS, FINRA, PRA, EBA, etc.) across ANY regulatory domain.
+
+Design principle: fully regulator-agnostic and domain-agnostic.
 """
 
 import json
@@ -12,103 +14,130 @@ from openai import AzureOpenAI
 from config import AzureOpenAIConfig, AppConfig
 
 # ---------------------------------------------------------------------------
-# Extraction prompt
+# Extraction system prompt — fully regulator-agnostic
 # ---------------------------------------------------------------------------
 
-EXTRACTION_SYSTEM_PROMPT = """You are a specialist regulatory compliance analyst.
-Your task is to extract structured intelligence from regulatory enforcement documents
-(e.g. FCA Final Notices, SEC Orders, MAS Notices) and return ONLY a valid JSON object.
+EXTRACTION_SYSTEM_PROMPT = """You are a specialist regulatory enforcement intelligence analyst.
 
-Extract the following fields exactly as specified. If a field cannot be determined from
-the document, use null for scalar fields or [] for array fields.
+Your task is to extract structured intelligence from ANY regulatory enforcement document —
+including but not limited to:
+- FCA (UK Financial Conduct Authority) Final Notices
+- DFS (NY Department of Financial Services) Consent Orders
+- SEC (US Securities and Exchange Commission) Orders
+- MAS (Monetary Authority of Singapore) Notices
+- FINRA Disciplinary Actions
+- PRA (Prudential Regulation Authority) Notices
+- EBA (European Banking Authority) Decisions
+- Any other national or international financial regulator
+
+You must extract information across ANY regulatory domain including:
+- Market Abuse / Market Surveillance
+- AML / Anti-Money Laundering / Sanctions
+- Trade Surveillance / Trade Reporting
+- Conduct Risk / Consumer Duty
+- Operational Risk / Resilience
+- Financial Crime / Fraud
+- Capital / Prudential Requirements
+- Data / Privacy / GDPR
+- Any other compliance domain
+
+Return ONLY a valid JSON object. If a field cannot be determined, use null for scalars or [] for arrays.
 
 Required JSON schema:
 {
   "regulator": {
-    "name": "<full regulator name>",
-    "abbreviation": "<abbreviation>"
+    "name": "<full regulator name — auto-detect from document>",
+    "abbreviation": "<abbreviation e.g. FCA, DFS, SEC, MAS>",
+    "country": "<country of regulator>"
   },
-  "jurisdiction": "<country or region>",
+  "jurisdiction": "<country or region e.g. United Kingdom, United States - New York>",
   "regulated_entity": {
-    "name": "<full entity name>",
+    "name": "<full legal name of the penalised firm>",
     "abbreviation": "<abbreviation or null>",
-    "entity_type": "<type of firm>",
-    "business_context": "<brief description of business activities>"
+    "entity_type": "<type of firm e.g. investment bank, broker-dealer, retail bank>",
+    "business_context": "<brief description of the firm's relevant business activities>"
   },
   "enforcement_action": {
-    "action_type": "<type of action e.g. Final Notice and financial penalty>",
-    "penalty_amount_gbp": <number or null>,
-    "legal_basis": "<statutory basis>",
+    "action_type": "<type e.g. Final Notice, Consent Order, Administrative Order, Civil Penalty>",
+    "penalty_amount": <number or null>,
+    "penalty_currency": "<ISO currency code e.g. GBP, USD, SGD or null>",
+    "legal_basis": "<statutory or regulatory basis for the action>",
     "settlement_discount": {
       "percentage": <number or null>,
-      "stage": "<stage name or null>",
-      "pre_discount_penalty_gbp": <number or null>
+      "stage": "<settlement stage name or null>",
+      "pre_discount_penalty": <number or null>
     },
     "notice_date": "<YYYY-MM-DD or null>",
-    "reference_number": "<reference or null>",
-    "additional_remedial_outcome": "<any additional remedies or null>"
+    "reference_number": "<case/reference number or null>",
+    "additional_remedial_outcome": "<any additional remedies, undertakings or null>"
   },
-  "regulatory_domain": ["<domain 1>", "<domain 2>"],
-  "scenario_description": "<detailed description of the misconduct scenario>",
-  "misconduct_control_failure_themes": ["<theme 1>", "<theme 2>"],
+  "regulatory_domain": ["<domain 1 e.g. Market Abuse>", "<domain 2>"],
+  "scenario_description": "<detailed, factual description of what went wrong and the timeline>",
+  "misconduct_control_failure_themes": [
+    "<concise theme 1 — e.g. Failure to maintain effective surveillance arrangements>",
+    "<concise theme 2>"
+  ],
   "root_cause_evidence": [
     {
-      "finding": "<finding summary>",
-      "evidence": "<supporting evidence from the document>"
+      "finding": "<root cause finding summary>",
+      "evidence": "<specific evidence cited in the document supporting this finding>"
     }
   ],
   "regulatory_requirements": [
     {
-      "requirement": "<rule/article reference>",
-      "obligation": "<what the rule requires>",
-      "breach_finding": "<how the entity breached it>"
+      "requirement": "<rule/article/principle reference e.g. UK MAR Article 16(2), 17 CFR 240.10b-5>",
+      "obligation": "<what the regulation requires the firm to do>",
+      "breach_finding": "<how the firm failed to meet this obligation>"
     }
   ],
   "customer_or_market_impact": {
-    "customer_impact": "<description or null>",
-    "market_impact": "<description or null>",
-    "affected_trading": {
-      "trade_count": <number or null>,
-      "notional_value_usd": <number or null>
+    "customer_impact": "<description of direct customer harm or null>",
+    "market_impact": "<description of market integrity risk or null>",
+    "affected_activity": {
+      "transaction_count": <number or null>,
+      "notional_value": <number or null>,
+      "notional_currency": "<ISO currency code or null>"
     },
     "post_remediation_review": {
-      "alerts_generated": <number or null>,
-      "suspected_insider_dealing_alerts": <number or null>,
-      "suspected_market_manipulation_alerts": <number or null>,
-      "reporting_outcome": "<description or null>"
+      "description": "<description of any retrospective review conducted or null>",
+      "findings": "<key findings from retrospective review or null>"
     },
-    "financial_benefit_from_breach": "<description or null>"
+    "financial_benefit_from_breach": "<any financial benefit derived by the firm or null>"
   },
-  "fca_source_citations": [
+  "source_citations": [
     {
       "source_document": "<document title>",
       "document_date": "<YYYY-MM-DD or null>",
       "reference_number": "<reference or null>",
-      "citations": ["<citation 1>", "<citation 2>"]
+      "key_paragraphs": ["<paragraph reference 1>", "<paragraph reference 2>"]
     }
   ],
   "confidence_score": {
-    "score": <float between 0 and 1>,
+    "score": <float 0.0 to 1.0>,
     "scale": "0 to 1",
-    "rationale": "<brief rationale for the score>"
+    "rationale": "<brief explanation of confidence level>"
   }
 }
 
-IMPORTANT:
-- Return ONLY the JSON object. No markdown, no explanation, no code fences.
-- All monetary amounts should be numbers (not strings).
-- Dates must be in YYYY-MM-DD format.
-- Be precise and faithful to the source document.
+CRITICAL RULES:
+- Return ONLY the raw JSON object. No markdown fences, no explanation text.
+- Auto-detect the regulator, jurisdiction and domain — do NOT assume FCA or UK by default.
+- All monetary amounts must be numbers, not strings.
+- Dates must be YYYY-MM-DD format.
+- Be precise and faithful to the source document — do not infer beyond what is stated.
+- misconduct_control_failure_themes should be specific and actionable (3-10 themes).
+- root_cause_evidence must cite actual evidence from the document.
 """
 
-EXTRACTION_USER_PROMPT_TEMPLATE = """Please extract structured intelligence from the
-following regulatory enforcement document text:
+EXTRACTION_USER_PROMPT_TEMPLATE = """Extract structured enforcement intelligence from the
+following regulatory enforcement document:
 
 ---BEGIN DOCUMENT---
 {document_text}
 ---END DOCUMENT---
 
-Return only the JSON object as specified."""
+Auto-detect the regulator, jurisdiction, regulatory domain and entity type from the document content.
+Return only the JSON object as specified. Do not assume any specific regulator or domain."""
 
 
 # ---------------------------------------------------------------------------
@@ -119,15 +148,18 @@ def extract_enforcement_data(document_text: str) -> dict:
     """
     Extract structured enforcement intelligence from raw document text.
 
+    Works for any regulator (FCA, DFS, SEC, MAS, FINRA, PRA, EBA, etc.)
+    and any regulatory domain (Market Abuse, AML, Trade Surveillance, etc.)
+
     Args:
-        document_text: Plain text extracted from the regulatory document.
+        document_text: Plain text extracted from the enforcement document.
 
     Returns:
         A Python dict matching the enforcement JSON schema.
 
     Raises:
-        ValueError:  If the LLM response cannot be parsed as valid JSON.
-        RuntimeError: If the Azure OpenAI API call fails.
+        ValueError:   If the LLM response cannot be parsed as valid JSON.
+        RuntimeError: If the Azure OpenAI API call fails or config is missing.
     """
     missing = AzureOpenAIConfig.validate()
     if missing:
@@ -142,9 +174,7 @@ def extract_enforcement_data(document_text: str) -> dict:
         api_version=AzureOpenAIConfig.API_VERSION,
     )
 
-    user_prompt = EXTRACTION_USER_PROMPT_TEMPLATE.format(
-        document_text=document_text
-    )
+    user_prompt = EXTRACTION_USER_PROMPT_TEMPLATE.format(document_text=document_text)
 
     response = client.chat.completions.create(
         model=AzureOpenAIConfig.DEPLOYMENT,
@@ -164,7 +194,7 @@ def extract_enforcement_data(document_text: str) -> dict:
     except json.JSONDecodeError as exc:
         raise ValueError(
             f"LLM returned invalid JSON during extraction: {exc}\n"
-            f"Raw response:\n{raw_content[:500]}"
+            f"Raw response (first 500 chars):\n{raw_content[:500]}"
         ) from exc
 
     return extracted
@@ -183,6 +213,9 @@ def get_extraction_summary(extracted: dict) -> dict:
     entity = extracted.get("regulated_entity", {})
     action = extracted.get("enforcement_action", {})
     regulator = extracted.get("regulator", {})
+    penalty = action.get("penalty_amount")
+    currency = action.get("penalty_currency", "")
+    penalty_display = f"{currency} {penalty:,}" if penalty else "N/A"
 
     return {
         "Regulator": regulator.get("abbreviation") or regulator.get("name", "N/A"),
@@ -190,17 +223,12 @@ def get_extraction_summary(extracted: dict) -> dict:
         "Regulated Entity": entity.get("name", "N/A"),
         "Entity Type": entity.get("entity_type", "N/A"),
         "Action Type": action.get("action_type", "N/A"),
-        "Penalty (GBP)": action.get("penalty_amount_gbp", "N/A"),
+        "Penalty": penalty_display,
         "Notice Date": action.get("notice_date", "N/A"),
         "Reference": action.get("reference_number", "N/A"),
-        "Misconduct Themes": len(
-            extracted.get("misconduct_control_failure_themes", [])
-        ),
+        "Domains": ", ".join(extracted.get("regulatory_domain", [])) or "N/A",
+        "Misconduct Themes": len(extracted.get("misconduct_control_failure_themes", [])),
         "Root Cause Findings": len(extracted.get("root_cause_evidence", [])),
-        "Regulatory Requirements": len(
-            extracted.get("regulatory_requirements", [])
-        ),
-        "Confidence Score": extracted.get("confidence_score", {}).get(
-            "score", "N/A"
-        ),
+        "Regulatory Requirements": len(extracted.get("regulatory_requirements", [])),
+        "Confidence Score": extracted.get("confidence_score", {}).get("score", "N/A"),
     }

@@ -15,7 +15,7 @@ class AzureOpenAIConfig:
 
     ENDPOINT: str = os.getenv("AZURE_OPENAI_ENDPOINT", "")
     API_KEY: str = os.getenv("AZURE_OPENAI_API_KEY", "")
-    DEPLOYMENT: str = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+    DEPLOYMENT: str = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
     API_VERSION: str = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
 
     @classmethod

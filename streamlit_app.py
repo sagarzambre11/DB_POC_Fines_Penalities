@@ -1,174 +1,129 @@
 """
 streamlit_app.py
 ----------------
-Main Streamlit UI for the Regulatory Enforcement Intelligence PoC.
+Regulatory Enforcement Intelligence PoC — v2
 
-5-Step Pipeline:
-  Step 1 — Upload regulatory enforcement document (DOCX/PDF)
-  Step 2 — Extract structured JSON using Azure OpenAI GPT-4o
-  Step 3 — Load and preview GRC Control Inventory
-  Step 4 — Run LLM-based gap analysis comparison
-  Step 5 — Display results and download Excel report
+AI-powered, regulator-agnostic gap analysis pipeline:
+  Step 1 — Upload ANY enforcement document (FCA, DFS, SEC, MAS, etc.)
+  Step 2 — Extract structured intelligence via Azure OpenAI GPT-4o
+  Step 3 — Load GRC inventory (dual-role: Policy Corpus + Control Inventory)
+  Step 4 — Run two-layer LLM gap analysis (Policy Layer + Control Layer)
+  Step 5 — View shift-left signals, stakeholder alerts, and download report
 """
 
-import json
 import time
-
 import pandas as pd
 import streamlit as st
 
 from config import AzureOpenAIConfig, AppConfig
 from app.parser import parse_document, get_document_preview
 from app.extractor import extract_enforcement_data, get_extraction_summary
-from app.inventory import load_inventory, inventory_to_dataframe, get_inventory_summary
-from app.comparator import compare_findings_to_inventory
+from app.inventory import (
+    load_inventory,
+    inventory_to_dataframe,
+    get_inventory_summary,
+)
+from app.comparator import compare_findings_to_inventory, get_overall_assessment
 from app.reporter import (
-    build_gap_analysis_dataframe,
-    build_unmatched_findings_dataframe,
+    build_policy_gap_dataframe,
+    build_control_gap_dataframe,
+    build_stakeholder_signals_dataframe,
+    build_unaddressed_findings_dataframe,
     build_summary_dataframe,
     generate_excel_report,
     get_report_filename,
 )
 
 # ---------------------------------------------------------------------------
-# Page configuration
+# Page config
 # ---------------------------------------------------------------------------
-
 st.set_page_config(
-    page_title="Regulatory Enforcement Intelligence PoC",
+    page_title="Regulatory Enforcement Intelligence",
     page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # ---------------------------------------------------------------------------
-# Custom CSS
+# CSS
 # ---------------------------------------------------------------------------
-
-st.markdown(
-    """
-    <style>
-    .main-title {
-        font-size: 2rem;
-        font-weight: 700;
-        color: #1F4E79;
-        margin-bottom: 0.2rem;
-    }
-    .sub-title {
-        font-size: 1rem;
-        color: #666;
-        margin-bottom: 1.5rem;
-    }
-    .step-header {
-        background: #1F4E79;
-        color: white;
-        padding: 0.4rem 0.8rem;
-        border-radius: 6px;
-        font-weight: 600;
-        font-size: 1rem;
-        margin-bottom: 0.5rem;
-    }
-    .metric-card {
-        background: #f8f9fa;
-        border: 1px solid #dee2e6;
-        border-radius: 8px;
-        padding: 1rem;
-        text-align: center;
-    }
-    .covered       { background-color: #d4edda; color: #276221; font-weight: bold; }
-    .partial       { background-color: #fff3cd; color: #9C5700; font-weight: bold; }
-    .policy-only   { background-color: #cce5ff; color: #1F4E79; font-weight: bold; }
-    .gap           { background-color: #f8d7da; color: #9C0006; font-weight: bold; }
-    .insufficient  { background-color: #e2e3e5; color: #595959; font-weight: bold; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown("""
+<style>
+.main-title  { font-size:2rem; font-weight:700; color:#1F4E79; margin-bottom:.2rem; }
+.sub-title   { font-size:1rem; color:#555; margin-bottom:1.2rem; }
+.step-header { background:#1F4E79; color:white; padding:.4rem .8rem;
+               border-radius:6px; font-weight:600; font-size:1rem; margin-bottom:.5rem; }
+.shift-left-box { background:#FFF3CD; border-left:5px solid #FFC107;
+                  padding:.8rem 1rem; border-radius:4px; margin:.5rem 0; }
+.signal-box { background:#F8D7DA; border-left:5px solid #DC3545;
+              padding:.8rem 1rem; border-radius:4px; margin:.5rem 0; }
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# Sidebar — configuration status
+# Sidebar
 # ---------------------------------------------------------------------------
-
 with st.sidebar:
-    st.image(
-        "https://upload.wikimedia.org/wikipedia/commons/4/44/Microsoft_logo.svg",
-        width=120,
-    )
     st.markdown("## ⚙️ Configuration")
-
-    missing_keys = AzureOpenAIConfig.validate()
-    if missing_keys:
-        st.error(
-            f"Missing Azure OpenAI config:\n\n"
-            + "\n".join(f"- `{k}`" for k in missing_keys)
-            + "\n\nPlease update your `.env` file."
-        )
+    missing = AzureOpenAIConfig.validate()
+    if missing:
+        st.error("Missing Azure OpenAI config:\n\n" +
+                 "\n".join(f"- `{k}`" for k in missing) +
+                 "\n\nUpdate your `.env` file.")
     else:
         st.success("✅ Azure OpenAI connected")
         st.markdown(f"**Deployment:** `{AzureOpenAIConfig.DEPLOYMENT}`")
         st.markdown(f"**API Version:** `{AzureOpenAIConfig.API_VERSION}`")
 
     st.divider()
-    st.markdown("## 📋 Pipeline Steps")
-    st.markdown(
-        """
-        1. 📄 Upload Document
-        2. 🔍 Extract JSON Data
-        3. 📊 Load GRC Inventory
-        4. 🤖 Run Gap Analysis
-        5. 📥 Download Report
-        """
-    )
+    st.markdown("## 📋 Pipeline")
+    st.markdown("""
+1. 📄 Upload Enforcement Document
+2. 🔍 Extract Intelligence (LLM)
+3. 📊 Load GRC Inventory
+4. 🤖 Run Two-Layer Gap Analysis
+5. 📥 View Results & Download
+""")
     st.divider()
-    st.markdown("**PoC Version:** 1.0.0")
-    st.markdown("**LLM:** Azure OpenAI GPT-4o")
+    st.markdown("**Version:** 2.0 — Universal")
+    st.markdown("**LLM:** Azure OpenAI GPT-4o-mini")
+    st.markdown("**Approach:** Shift-Left Compliance Intelligence")
 
 # ---------------------------------------------------------------------------
-# Main title
+# Title
 # ---------------------------------------------------------------------------
-
+st.markdown('<div class="main-title">🏦 Regulatory Enforcement Intelligence</div>',
+            unsafe_allow_html=True)
 st.markdown(
-    '<div class="main-title">🏦 Regulatory Enforcement Intelligence PoC</div>',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<div class="sub-title">Automated gap analysis between regulatory enforcement findings '
-    "and your GRC Control Inventory — powered by Azure OpenAI GPT-4o</div>",
-    unsafe_allow_html=True,
-)
-
+    '<div class="sub-title">AI-powered gap analysis between enforcement actions and your '
+    'GRC inventory — works for any regulator (FCA, DFS, SEC, MAS, FINRA...) '
+    'and any compliance domain</div>',
+    unsafe_allow_html=True)
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Session state initialisation
+# Session state
 # ---------------------------------------------------------------------------
-
-if "document_text" not in st.session_state:
-    st.session_state.document_text = None
-if "extracted_data" not in st.session_state:
-    st.session_state.extracted_data = None
-if "inventory" not in st.session_state:
-    st.session_state.inventory = None
-if "comparison" not in st.session_state:
-    st.session_state.comparison = None
-if "uploaded_filename" not in st.session_state:
-    st.session_state.uploaded_filename = None
+for key in ["document_text", "extracted_data", "inventory", "comparison",
+            "uploaded_filename"]:
+    if key not in st.session_state:
+        st.session_state[key] = None
 
 # ---------------------------------------------------------------------------
 # STEP 1 — Upload Document
 # ---------------------------------------------------------------------------
-
-st.markdown('<div class="step-header">Step 1 — Upload Regulatory Enforcement Document</div>', unsafe_allow_html=True)
+st.markdown('<div class="step-header">Step 1 — Upload Enforcement Document (any regulator)</div>',
+            unsafe_allow_html=True)
 
 uploaded_file = st.file_uploader(
-    "Upload a regulatory enforcement document (FCA Final Notice, SEC Order, etc.)",
+    "Upload a regulatory enforcement document — FCA Final Notice, DFS Consent Order, "
+    "SEC Order, MAS Notice, FINRA Action, etc.",
     type=["docx", "pdf"],
     help="Supported formats: .docx and .pdf",
 )
 
 if uploaded_file is not None:
     if uploaded_file.name != st.session_state.uploaded_filename:
-        # Reset downstream state when a new file is uploaded
         st.session_state.extracted_data = None
         st.session_state.comparison = None
         st.session_state.uploaded_filename = uploaded_file.name
@@ -178,7 +133,7 @@ if uploaded_file is not None:
                 file_bytes = uploaded_file.read()
                 st.session_state.document_text = parse_document(file_bytes, uploaded_file.name)
                 st.success(
-                    f"✅ Document parsed successfully — "
+                    f"✅ Document parsed — "
                     f"**{len(st.session_state.document_text):,}** characters extracted."
                 )
             except ValueError as e:
@@ -187,36 +142,31 @@ if uploaded_file is not None:
 
     if st.session_state.document_text:
         with st.expander("📄 Document Preview (first 1,000 characters)", expanded=False):
-            preview = get_document_preview(st.session_state.document_text, max_chars=1000)
-            st.text(preview)
+            st.text(get_document_preview(st.session_state.document_text, max_chars=1000))
 
 st.divider()
 
 # ---------------------------------------------------------------------------
-# STEP 2 — Extract Structured JSON
+# STEP 2 — Extract Structured Intelligence
 # ---------------------------------------------------------------------------
-
-st.markdown('<div class="step-header">Step 2 — Extract Structured Enforcement Data (LLM)</div>', unsafe_allow_html=True)
+st.markdown('<div class="step-header">Step 2 — Extract Enforcement Intelligence (GPT-4o)</div>',
+            unsafe_allow_html=True)
 
 if st.session_state.document_text is None:
-    st.info("⬆️ Please upload a document in Step 1 to proceed.")
+    st.info("⬆️ Upload a document in Step 1 to proceed.")
 else:
-    col1, col2 = st.columns([1, 3])
+    col1, _ = st.columns([1, 3])
     with col1:
-        extract_btn = st.button(
-            "🔍 Extract Data",
-            disabled=(st.session_state.document_text is None),
-            use_container_width=True,
-            type="primary",
-        )
+        extract_btn = st.button("🔍 Extract Intelligence", type="primary",
+                                use_container_width=True)
 
     if extract_btn:
-        with st.spinner("Calling Azure OpenAI GPT-4o to extract enforcement data..."):
+        with st.spinner("GPT-4o extracting enforcement intelligence..."):
             try:
                 st.session_state.extracted_data = extract_enforcement_data(
                     st.session_state.document_text
                 )
-                st.session_state.comparison = None  # reset downstream
+                st.session_state.comparison = None
                 st.success("✅ Extraction complete.")
             except Exception as e:
                 st.error(f"Extraction failed: {e}")
@@ -225,12 +175,27 @@ else:
     if st.session_state.extracted_data:
         summary = get_extraction_summary(st.session_state.extracted_data)
 
-        st.markdown("##### 📋 Extraction Summary")
-        cols = st.columns(4)
-        summary_items = list(summary.items())
-        for i, (key, val) in enumerate(summary_items):
-            with cols[i % 4]:
-                st.metric(label=key, value=str(val))
+        # Auto-detected metadata banner
+        ed = st.session_state.extracted_data
+        reg = ed.get("regulator", {})
+        entity = ed.get("regulated_entity", {})
+        action = ed.get("enforcement_action", {})
+        domains = ", ".join(ed.get("regulatory_domain", []))
+        penalty = action.get("penalty_amount")
+        currency = action.get("penalty_currency", "")
+
+        st.markdown("##### 🌍 Auto-Detected Enforcement Intelligence")
+        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+        r1c1.metric("Regulator", reg.get("abbreviation") or reg.get("name", "N/A"))
+        r1c2.metric("Jurisdiction", ed.get("jurisdiction", "N/A"))
+        r1c3.metric("Entity", entity.get("name", "N/A")[:30])
+        r1c4.metric("Penalty", f"{currency} {penalty:,}" if penalty else "N/A")
+
+        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+        r2c1.metric("Domain(s)", domains[:40] if domains else "N/A")
+        r2c2.metric("Notice Date", action.get("notice_date", "N/A"))
+        r2c3.metric("Misconduct Themes", len(ed.get("misconduct_control_failure_themes", [])))
+        r2c4.metric("Confidence", summary.get("Confidence Score", "N/A"))
 
         with st.expander("🔎 Full Extracted JSON", expanded=False):
             st.json(st.session_state.extracted_data)
@@ -238,12 +203,11 @@ else:
 st.divider()
 
 # ---------------------------------------------------------------------------
-# STEP 3 — Load GRC Inventory
+# STEP 3 — GRC Inventory (dual-role)
 # ---------------------------------------------------------------------------
+st.markdown('<div class="step-header">Step 3 — GRC Inventory (Policy Corpus + Control Inventory)</div>',
+            unsafe_allow_html=True)
 
-st.markdown('<div class="step-header">Step 3 — GRC Control Inventory</div>', unsafe_allow_html=True)
-
-# Auto-load inventory
 if st.session_state.inventory is None:
     try:
         st.session_state.inventory = load_inventory()
@@ -252,26 +216,29 @@ if st.session_state.inventory is None:
 
 if st.session_state.inventory:
     inv_summary = get_inventory_summary(st.session_state.inventory)
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        st.metric("Total Controls", inv_summary["Total Controls"])
-    with col_b:
-        st.metric("Regulatory Domain", ", ".join(inv_summary["Regulatory Domains"]))
-    with col_c:
-        status_str = " | ".join(f"{k}: {v}" for k, v in inv_summary["Status Breakdown"].items())
-        st.metric("Status", status_str)
+    ca, cb, cc = st.columns(3)
+    ca.metric("Total Items", inv_summary["Total Controls"])
+    cb.metric("Domain(s)", ", ".join(inv_summary["Regulatory Domains"]))
+    cc.metric("Status", " | ".join(f"{k}: {v}" for k, v in
+                                   inv_summary["Status Breakdown"].items()))
+
+    st.info(
+        "💡 **Dual-role inventory:** Each row serves as both a **Policy** "
+        "(intent/objective — primary mapping) and an **Operational Control** "
+        "(mechanism — secondary mapping). This enables the shift-left analysis."
+    )
 
     with st.expander("📊 GRC Inventory Preview", expanded=False):
         inv_df = inventory_to_dataframe(st.session_state.inventory)
-        st.dataframe(inv_df, width='stretch', hide_index=True)
+        st.dataframe(inv_df, width="stretch", hide_index=True)
 
 st.divider()
 
 # ---------------------------------------------------------------------------
-# STEP 4 — Run Gap Analysis
+# STEP 4 — Two-Layer Gap Analysis
 # ---------------------------------------------------------------------------
-
-st.markdown('<div class="step-header">Step 4 — Run LLM Gap Analysis (Azure OpenAI GPT-4o)</div>', unsafe_allow_html=True)
+st.markdown('<div class="step-header">Step 4 — Two-Layer Gap Analysis (Policy + Control)</div>',
+            unsafe_allow_html=True)
 
 step4_ready = (
     st.session_state.extracted_data is not None
@@ -281,27 +248,31 @@ step4_ready = (
 if not step4_ready:
     st.info("⬆️ Complete Steps 1–3 before running the gap analysis.")
 else:
-    col1, col2 = st.columns([1, 3])
+    st.markdown("""
+    **Layer 1 — Policy Coverage** *(primary, shift-left signal)*
+    Assesses whether your firm's **policy intent** would have mandated the right governance.
+
+    **Layer 2 — Control Coverage** *(secondary, operational signal)*
+    Assesses whether an **operational control** would have detected or prevented the failure.
+    """)
+
+    col1, _ = st.columns([1, 3])
     with col1:
-        analyse_btn = st.button(
-            "🤖 Run Gap Analysis",
-            use_container_width=True,
-            type="primary",
-        )
+        analyse_btn = st.button("🤖 Run Gap Analysis", type="primary",
+                                use_container_width=True)
 
     if analyse_btn:
         with st.spinner(
-            "Comparing enforcement findings against GRC inventory using GPT-4o... "
-            "This may take 20–40 seconds."
+            "GPT-4o running two-layer gap analysis (Policy + Control)... "
+            "This may take 30–60 seconds."
         ):
             try:
-                start = time.time()
+                t0 = time.time()
                 st.session_state.comparison = compare_findings_to_inventory(
                     st.session_state.extracted_data,
                     st.session_state.inventory,
                 )
-                elapsed = time.time() - start
-                st.success(f"✅ Gap analysis complete in {elapsed:.1f}s.")
+                st.success(f"✅ Gap analysis complete in {time.time() - t0:.1f}s.")
             except Exception as e:
                 st.error(f"Gap analysis failed: {e}")
                 st.session_state.comparison = None
@@ -311,77 +282,199 @@ st.divider()
 # ---------------------------------------------------------------------------
 # STEP 5 — Results & Download
 # ---------------------------------------------------------------------------
-
-st.markdown('<div class="step-header">Step 5 — Gap Analysis Results & Report</div>', unsafe_allow_html=True)
+st.markdown('<div class="step-header">Step 5 — Results, Signals & Report</div>',
+            unsafe_allow_html=True)
 
 if st.session_state.comparison is None:
     st.info("⬆️ Run the gap analysis in Step 4 to see results here.")
 else:
     comparison = st.session_state.comparison
-    assessment = comparison.get("overall_assessment", {})
+    assessment = get_overall_assessment(comparison)
 
-    # ── Overall Assessment ───────────────────────────────────────────────────
+    # ── Shift-Left Headline ──────────────────────────────────────────────────
+    headline = assessment.get("shift_left_headline", "")
+    if headline:
+        st.markdown(
+            f'<div class="shift-left-box">⚡ <strong>Shift-Left Signal:</strong> {headline}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Overall Metrics ──────────────────────────────────────────────────────
     st.markdown("### 📊 Overall Assessment")
 
     risk = assessment.get("overall_risk_rating", "N/A")
-    risk_colors = {"Low": "🟢", "Medium": "🟡", "High": "🟠", "Critical": "🔴"}
-    risk_icon = risk_colors.get(risk, "⚪")
+    risk_icon = {"Low": "🟢", "Medium": "🟡", "High": "🟠", "Critical": "🔴"}.get(risk, "⚪")
 
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
-    col1.metric("Total Assessed", assessment.get("total_controls_assessed", 0))
-    col2.metric("✅ Covered", assessment.get("covered_count", 0))
-    col3.metric("🟡 Partial", assessment.get("partially_covered_count", 0))
-    col4.metric("📄 Policy-Only", assessment.get("policy_only_count", 0))
-    col5.metric("🔴 Gap", assessment.get("gap_count", 0))
-    col6.metric(f"{risk_icon} Risk Rating", risk)
+    pl_s = assessment.get("policy_layer_summary", {})
+    cl_s = assessment.get("control_layer_summary", {})
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total Assessed", assessment.get("total_assessed", 0))
+    c2.metric("Policy Gaps 🔴", pl_s.get("potential_gap", 0))
+    c3.metric("Control Gaps 🔴", cl_s.get("potential_gap", 0))
+    c4.metric("Partially Covered 🟡",
+              pl_s.get("partially_covered", 0) + cl_s.get("partially_covered", 0))
+    c5.metric(f"{risk_icon} Risk Rating", risk)
 
     exec_summary = assessment.get("executive_summary", "")
     if exec_summary:
         st.info(f"**Executive Summary:** {exec_summary}")
 
-    # ── Gap Analysis Table ───────────────────────────────────────────────────
-    st.markdown("### 🗂️ Per-Control Gap Analysis")
+    # ── Two-Layer Results Tabs ───────────────────────────────────────────────
+    tab_policy, tab_control, tab_signals, tab_unaddressed = st.tabs([
+        "📜 Policy Layer (Primary)",
+        "🔧 Control Layer (Secondary)",
+        "🔔 Stakeholder Signals",
+        "⚠️ Unaddressed Findings",
+    ])
 
-    gap_df = build_gap_analysis_dataframe(comparison)
-
-    # Coverage classification filter
-    all_classifications = AppConfig.COVERAGE_LABELS
-    selected = st.multiselect(
-        "Filter by Coverage Classification:",
-        options=all_classifications,
-        default=all_classifications,
-    )
-    filtered_df = gap_df[gap_df["Coverage Classification"].isin(selected)]
-
-    def _highlight_classification(val: str) -> str:
-        color_map = {
-            "Covered": "background-color: #d4edda; color: #276221; font-weight: bold",
-            "Partially Covered": "background-color: #fff3cd; color: #9C5700; font-weight: bold",
-            "Policy-Only Coverage": "background-color: #cce5ff; color: #1F4E79; font-weight: bold",
-            "Potential Control Gap": "background-color: #f8d7da; color: #9C0006; font-weight: bold",
-            "Insufficient Evidence": "background-color: #e2e3e5; color: #595959; font-weight: bold",
-        }
-        return color_map.get(val, "")
-
-    styled_df = filtered_df.style.applymap(
-        _highlight_classification, subset=["Coverage Classification"]
-    )
-
-    st.dataframe(styled_df, width='stretch', hide_index=True, height=420)
-
-    # ── Unmatched Findings ───────────────────────────────────────────────────
-    unmatched_df = build_unmatched_findings_dataframe(comparison)
-    if not unmatched_df.empty:
-        st.markdown("### ⚠️ Unmatched Findings (No Existing Control)")
-        st.warning(
-            f"**{len(unmatched_df)} enforcement finding(s)** have no matching control "
-            "in the GRC inventory. New controls may be required."
+    # --- Policy Layer Tab ---
+    with tab_policy:
+        st.markdown("#### � Policy Coverage — Shift-Left Analysis")
+        st.caption(
+            "Assesses whether existing **policy intent** (objectives/statements) "
+            "would have mandated the governance that was absent in the enforcement case."
         )
-        st.dataframe(unmatched_df, width='stretch', hide_index=True)
-    else:
-        st.success("✅ All enforcement findings are addressed by at least one control in the inventory.")
 
-    # ── Download Excel Report ────────────────────────────────────────────────
+        policy_df = build_policy_gap_dataframe(comparison)
+
+        policy_labels = ["Covered", "Partially Covered", "Potential Gap", "Insufficient Evidence"]
+        sel_policy = st.multiselect(
+            "Filter by Policy Coverage:",
+            options=policy_labels,
+            default=policy_labels,
+            key="filter_policy",
+        )
+        filtered_policy = policy_df[policy_df["Policy Coverage"].isin(sel_policy)]
+
+        def _style_policy(val):
+            m = {
+                "Covered": "background-color:#d4edda;color:#276221;font-weight:bold",
+                "Partially Covered": "background-color:#fff3cd;color:#9C5700;font-weight:bold",
+                "Potential Gap": "background-color:#f8d7da;color:#9C0006;font-weight:bold",
+                "Insufficient Evidence": "background-color:#e2e3e5;color:#595959;font-weight:bold",
+            }
+            return m.get(val, "")
+
+        st.dataframe(
+            filtered_policy.style.map(_style_policy, subset=["Policy Coverage"]),
+            width="stretch", hide_index=True, height=400,
+        )
+
+        # Shift-left signal callouts
+        gap_items = filtered_policy[filtered_policy["Policy Coverage"] == "Potential Gap"]
+        if not gap_items.empty:
+            st.markdown("##### ⚡ Shift-Left Signals for Policy Gaps")
+            for _, row in gap_items.iterrows():
+                sig = row.get("Shift Left Signal", "")
+                if sig:
+                    st.markdown(
+                        f'<div class="shift-left-box"><strong>{row["ID"]} — {row["Name"]}</strong>'
+                        f'<br>{sig}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+    # --- Control Layer Tab ---
+    with tab_control:
+        st.markdown("#### Control Coverage — Operational Analysis")
+        st.caption(
+            "Assesses whether an **operational control** (mechanism/procedure) "
+            "would have detected or prevented the enforcement failure."
+        )
+
+        control_df = build_control_gap_dataframe(comparison)
+
+        control_labels = ["Covered", "Partially Covered", "Policy-Only Coverage",
+                          "Potential Gap", "Insufficient Evidence"]
+        sel_control = st.multiselect(
+            "Filter by Control Coverage:",
+            options=control_labels,
+            default=control_labels,
+            key="filter_control",
+        )
+        filtered_control = control_df[control_df["Control Coverage"].isin(sel_control)]
+
+        def _style_control(val):
+            m = {
+                "Covered": "background-color:#d4edda;color:#276221;font-weight:bold",
+                "Partially Covered": "background-color:#fff3cd;color:#9C5700;font-weight:bold",
+                "Policy-Only Coverage": "background-color:#cce5ff;color:#1F4E79;font-weight:bold",
+                "Potential Gap": "background-color:#f8d7da;color:#9C0006;font-weight:bold",
+                "Insufficient Evidence": "background-color:#e2e3e5;color:#595959;font-weight:bold",
+            }
+            return m.get(val, "")
+
+        st.dataframe(
+            filtered_control.style.map(_style_control, subset=["Control Coverage"]),
+            width="stretch", hide_index=True, height=400,
+        )
+
+    # --- Stakeholder Signals Tab ---
+    with tab_signals:
+        st.markdown("#### Stakeholder Action Signals")
+        st.caption(
+            "Who needs to act, what action is required, and with what priority."
+        )
+
+        signals_df = build_stakeholder_signals_dataframe(comparison)
+        if signals_df.empty:
+            st.success("No stakeholder signals — all items are fully covered.")
+        else:
+            # Priority filter
+            priorities = ["High", "Medium", "Low"]
+            sel_pri = st.multiselect(
+                "Filter by Priority:", options=priorities, default=priorities,
+                key="filter_priority",
+            )
+            filtered_signals = signals_df[signals_df["Priority"].isin(sel_pri)]
+
+            def _style_priority(val):
+                m = {
+                    "High":   "background-color:#f8d7da;color:#9C0006;font-weight:bold",
+                    "Medium": "background-color:#fff3cd;color:#9C5700;font-weight:bold",
+                    "Low":    "background-color:#d4edda;color:#276221;font-weight:bold",
+                }
+                return m.get(val, "")
+
+            st.dataframe(
+                filtered_signals.style.map(_style_priority, subset=["Priority"]),
+                width="stretch", hide_index=True, height=400,
+            )
+
+            # High priority signal callouts
+            high_signals = filtered_signals[filtered_signals["Priority"] == "High"]
+            if not high_signals.empty:
+                st.markdown("##### 🔴 High Priority Actions")
+                for _, row in high_signals.iterrows():
+                    st.markdown(
+                        f'<div class="signal-box"><strong>{row["Stakeholder"]}</strong> '
+                        f'— {row["ID"]} {row["Name"]}<br>{row["Signal"]}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+    # --- Unaddressed Findings Tab ---
+    with tab_unaddressed:
+        st.markdown("#### Unaddressed Enforcement Findings")
+        st.caption(
+            "Enforcement themes or root causes with **no matching policy or control** "
+            "in the current inventory. New policies and/or controls may be required."
+        )
+
+        unaddressed_df = build_unaddressed_findings_dataframe(comparison)
+        if unaddressed_df.empty:
+            st.success(
+                "All enforcement themes are addressed by at least one "
+                "policy or control in the inventory."
+            )
+        else:
+            st.warning(
+                f"**{len(unaddressed_df)} enforcement theme(s)** have no matching "
+                "policy or control. Review the suggested policies and controls below."
+            )
+            st.dataframe(unaddressed_df, width="stretch", hide_index=True)
+
+    # ── Download Report ──────────────────────────────────────────────────────
+    st.divider()
     st.markdown("### 📥 Download Full Report")
 
     try:
@@ -391,7 +484,6 @@ else:
             inventory=st.session_state.inventory,
         )
         filename = get_report_filename(st.session_state.extracted_data)
-
         st.download_button(
             label="📥 Download Excel Report (.xlsx)",
             data=excel_bytes,
@@ -401,8 +493,8 @@ else:
             width="content",
         )
         st.caption(
-            f"Report contains 5 sheets: Summary, Gap Analysis, Unmatched Findings, "
-            "Enforcement Data, GRC Inventory."
+            "Report contains 7 sheets: Summary, Policy Gap Analysis, Control Gap Analysis, "
+            "Stakeholder Signals, Unaddressed Findings, Enforcement Data, GRC Inventory."
         )
     except Exception as e:
         st.error(f"Failed to generate Excel report: {e}")
@@ -410,12 +502,11 @@ else:
 # ---------------------------------------------------------------------------
 # Footer
 # ---------------------------------------------------------------------------
-
 st.divider()
 st.markdown(
-    "<div style='text-align:center; color:#aaa; font-size:0.8rem;'>"
-    "Regulatory Enforcement Intelligence PoC · Azure OpenAI GPT-4o · "
-    "For internal use only · Not legal advice"
+    "<div style='text-align:center;color:#aaa;font-size:.8rem;'>"
+    "Regulatory Enforcement Intelligence PoC v2 · Azure OpenAI GPT-4o · "
+    "Universal — FCA | DFS | SEC | MAS | FINRA · For internal use only · Not legal advice"
     "</div>",
     unsafe_allow_html=True,
 )

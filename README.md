@@ -1,111 +1,155 @@
-# 🏦 Regulatory Enforcement Intelligence PoC
+# 🏦 Regulatory Enforcement Intelligence — PoC v2
 
-> Automated gap analysis between regulatory enforcement findings and your GRC Control Inventory — powered by **Azure OpenAI GPT-4o** and **Streamlit**.
+> **AI-powered, regulator-agnostic shift-left compliance intelligence.**
+> Upload any enforcement document. Auto-detect regulator, jurisdiction and domain.
+> Map findings to your GRC inventory at **policy level** (primary) and **control level** (secondary).
+> Powered by **Azure OpenAI GPT-4o** + **Streamlit**.
 
 ---
 
 ## 📋 Table of Contents
 
-1. [Overview](#overview)
-2. [How It Works — The 5-Step Pipeline](#how-it-works)
-3. [Architecture](#architecture)
-4. [Project Structure](#project-structure)
-5. [Prerequisites](#prerequisites)
-6. [Installation](#installation)
-7. [Configuration](#configuration)
-8. [Running Locally](#running-locally)
-9. [Using the Application](#using-the-application)
-10. [GRC Inventory Format](#grc-inventory-format)
-11. [Output Report](#output-report)
-12. [Coverage Classifications](#coverage-classifications)
-13. [Docker Deployment](#docker-deployment)
-14. [Troubleshooting](#troubleshooting)
+1. [What This Is](#what-this-is)
+2. [The Shift-Left Value Narrative](#the-shift-left-value-narrative)
+3. [How It Works — 5-Step Pipeline](#how-it-works)
+4. [Two-Layer Analysis](#two-layer-analysis)
+5. [Architecture](#architecture)
+6. [Project Structure](#project-structure)
+7. [Prerequisites](#prerequisites)
+8. [Installation](#installation)
+9. [Configuration](#configuration)
+10. [Running Locally](#running-locally)
+11. [Using the Application](#using-the-application)
+12. [GRC Inventory Format](#grc-inventory-format)
+13. [Output Report — 7 Sheets](#output-report)
+14. [Coverage Classifications](#coverage-classifications)
+15. [Supported Regulators & Domains](#supported-regulators--domains)
+16. [Docker Deployment](#docker-deployment)
+17. [Troubleshooting](#troubleshooting)
 
 ---
 
-## Overview
+## What This Is
 
-This Proof of Concept (PoC) automates the end-to-end process of:
+This is **not** a news analytics tool. It is **enforcement-driven control gap intelligence**.
 
-1. **Ingesting** regulatory enforcement documents (FCA Final Notices, SEC Orders, MAS Notices, etc.)
-2. **Extracting** structured intelligence from them using an LLM (Azure OpenAI GPT-4o)
-3. **Comparing** extracted findings against your firm's GRC Control Inventory
-4. **Classifying** coverage gaps per control
-5. **Generating** a colour-coded Excel gap analysis report
+The system ingests real regulatory enforcement documents (FCA Final Notices, DFS Consent Orders, SEC Orders, MAS Notices, FINRA Actions, etc.), extracts what actually went wrong, and tells you — proactively — whether your firm's **policies** and **controls** would have prevented it.
 
-**Source document used in this PoC:**
-> *Final Notice 2026 — Dinosaur Merchant Bank Limited (DMBL)* — FCA enforcement action for failure to maintain effective market abuse surveillance arrangements under UK MAR Article 16(2), Principle 3, and SYSC 6.1.1R.
+**Key differentiators:**
+- Real enforcement reports, not news summaries
+- Scenario details, control breakdowns, failure specifics
+- Policy-level mapping (not just controls)
+- Shift-left: act before regulators formalise new rules
+- Cross-division reusable: CB, PB, IB, AFC, etc.
+
+---
+
+## The Shift-Left Value Narrative
+
+Traditional compliance is **reactive**: wait for regulations, update policies, implement controls.
+
+This system enables **proactive compliance intelligence**:
+
+```
+REACTIVE (old):    Regulation → Fine → Policy Update → Control Fix
+SHIFT LEFT (new):  Fine (elsewhere) → Gap Detection → Policy Update → Control Fix
+                                       ↑ THIS SYSTEM DOES THIS
+```
+
+When another firm is fined, this system answers:
+> *"If this had happened at our firm, which of our policies and controls would have failed?"*
+
+**Strategic value:** Avoid future penalties and reputational damage. Improve regulatory readiness before rules are formalised.
 
 ---
 
 ## How It Works
 
-### Step 1 — Upload the Document
-- Accept a regulatory enforcement document in **DOCX** or **PDF** format
-- Extract raw text using `python-docx` (DOCX) or `pdfplumber` (PDF)
+### Step 1 — Upload Document
+- Accept any enforcement document (DOCX or PDF)
+- Auto-extract raw text via `python-docx` / `pdfplumber`
+- Works for: FCA, DFS, SEC, MAS, FINRA, PRA, EBA, and others
 
-### Step 2 — Extract Structured JSON
-- Send the extracted text to **Azure OpenAI GPT-4o** with a structured extraction prompt
-- The LLM returns a validated JSON object containing 13 standardised fields:
+### Step 2 — Extract Enforcement Intelligence
+- Azure OpenAI GPT-4o **auto-detects** regulator, jurisdiction, domain
+- Extracts 13 standardised fields including:
+  - Misconduct/control failure themes
+  - Root cause evidence with citations
+  - Regulatory requirements breached
+  - Customer/market impact
+  - Confidence score
 
-| Field | Description |
-|---|---|
-| `regulator` | Regulator name and abbreviation |
-| `jurisdiction` | Country or region |
-| `regulated_entity` | Firm name, type, and business context |
-| `enforcement_action` | Action type, penalty, legal basis, settlement discount |
-| `regulatory_domain` | Domain areas covered (e.g. Market Abuse, STOR) |
-| `scenario_description` | Detailed description of the misconduct |
-| `misconduct_control_failure_themes` | List of control failure themes |
-| `root_cause_evidence` | Findings with supporting evidence |
-| `regulatory_requirements` | Breached rules with obligations and findings |
-| `customer_or_market_impact` | Impact assessment and affected trading data |
-| `fca_source_citations` | Document references and paragraph citations |
-| `confidence_score` | LLM confidence score (0–1) with rationale |
+### Step 3 — Load GRC Inventory (Dual-Role)
+- Loads `docs/grc_inventory.xlsx`
+- Each row serves **two roles**:
+  - **Policy Layer**: `control_objective` → treated as policy statement
+  - **Control Layer**: `control_description` → treated as operational control
 
-### Step 3 — Load GRC Control Inventory
-- Automatically loads `docs/grc_inventory.xlsx`
-- Displays 7 controls (MAB-SURV-001 through MAB-QA-007) covering Market Abuse domain
+### Step 4 — Two-Layer Gap Analysis
+- GPT-4o compares enforcement findings against every inventory item at **both layers**
+- Returns per-item classification, rationale, evidence, shift-left signals, stakeholder routing
+- Identifies enforcement themes with **no matching policy or control**
 
-### Step 4 — LLM Gap Analysis
-- Sends the extracted enforcement JSON **+** GRC inventory to GPT-4o
-- The LLM assesses coverage of each control against the enforcement findings
-- Returns structured comparison JSON with per-control classifications
+### Step 5 — Results & Download
+- Colour-coded results in 4 tabs: Policy Layer | Control Layer | Stakeholder Signals | Unaddressed Findings
+- Shift-left headline and executive summary
+- Downloadable 7-sheet Excel report
 
-### Step 5 — Generate Gap Analysis Report
-- Displays colour-coded results table in the UI
-- Highlights unmatched findings with no existing control
-- Generates a downloadable multi-sheet **Excel report**
+---
+
+## Two-Layer Analysis
+
+### Layer 1 — Policy Coverage (Primary, "Shift Left" Signal)
+
+> *"Does your firm have a policy that would have required this governance to exist?"*
+
+Maps enforcement findings against the **policy intent** (`control_objective`) of each inventory row.
+A policy gap = the firm's framework did not mandate the right behaviour at the strategic level.
+
+### Layer 2 — Control Coverage (Secondary, Operational Signal)
+
+> *"Is there an operational control that would have detected or prevented this failure?"*
+
+Maps enforcement findings against the **operational control** (`control_description`) of each inventory row.
+A control gap = even if a policy exists, the operational mechanism is missing or inadequate.
+
+### Classification Labels
+
+| Label | Policy Layer | Control Layer |
+|---|---|---|
+| ✅ **Covered** | Policy fully addresses the finding | Control fully addresses the finding |
+| 🟡 **Partially Covered** | Policy exists but is narrow/incomplete | Control exists but has gaps |
+| 📄 **Policy-Only Coverage** | N/A | Policy exists, but no operational control |
+| 🔴 **Potential Gap** | No policy addresses this finding | No control addresses this finding |
+| ❓ **Insufficient Evidence** | Cannot determine | Cannot determine |
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                   Streamlit Web Application                          │
-│                                                                     │
-│  ┌──────────┐   ┌──────────────┐   ┌────────────┐   ┌──────────┐  │
-│  │  Step 1  │   │   Step 2     │   │  Step 3    │   │  Step 4  │  │
-│  │  Upload  │──▶│  LLM Extract │──▶│  Load GRC  │──▶│  LLM Gap │  │
-│  │  DOCX/   │   │  (GPT-4o)    │   │ Inventory  │   │ Analysis │  │
-│  │   PDF    │   │              │   │  (Excel)   │   │ (GPT-4o) │  │
-│  └──────────┘   └──────────────┘   └────────────┘   └──────────┘  │
-│                                                            │        │
-│                                                     ┌──────▼──────┐ │
-│                                                     │   Step 5    │ │
-│                                                     │ Gap Report  │ │
-│                                                     │  + Excel    │ │
-│                                                     │  Download   │ │
-│                                                     └─────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-                    ┌─────────▼──────────┐
-                    │  Azure OpenAI      │
-                    │  GPT-4o            │
-                    │  (Extraction +     │
-                    │   Comparison)      │
-                    └────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│              Regulatory Enforcement Intelligence — v2                 │
+│                                                                      │
+│  ┌──────────┐  ┌─────────────┐  ┌──────────────┐  ┌─────────────┐  │
+│  │ Step 1   │  │  Step 2     │  │   Step 3     │  │   Step 4    │  │
+│  │ Upload   │─▶│ LLM Extract │─▶│ GRC Inventory│─▶│ Two-Layer   │  │
+│  │ Any Doc  │  │ (GPT-4o)    │  │ Dual-Role    │  │ LLM Compare │  │
+│  │ DOCX/PDF │  │ Auto-detect │  │ Policy +     │  │ (GPT-4o)    │  │
+│  │          │  │ Regulator,  │  │ Control      │  │             │  │
+│  │          │  │ Domain,     │  │              │  │             │  │
+│  │          │  │ Jurisdiction│  │              │  │             │  │
+│  └──────────┘  └─────────────┘  └──────────────┘  └──────┬──────┘  │
+│                                                           │         │
+│                                              ┌────────────▼───────┐ │
+│                                              │      Step 5        │ │
+│                                              │  Policy Gap Tab    │ │
+│                                              │  Control Gap Tab   │ │
+│                                              │  Stakeholder Tab   │ │
+│                                              │  Unaddressed Tab   │ │
+│                                              │  Excel Download    │ │
+│                                              └────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 **Tech Stack:**
@@ -113,13 +157,13 @@ This Proof of Concept (PoC) automates the end-to-end process of:
 | Component | Technology |
 |---|---|
 | Language | Python 3.11+ |
-| Frontend / UI | Streamlit |
-| LLM | Azure OpenAI GPT-4o |
-| Document Parsing | `python-docx` (DOCX), `pdfplumber` (PDF) |
-| GRC Inventory | `pandas` + `openpyxl` (Excel) |
-| LLM Client | `openai` Python SDK (Azure mode) |
-| Report Export | `openpyxl` (styled Excel workbook) |
-| Deployment | Local (`streamlit run`) / Docker |
+| UI | Streamlit |
+| LLM | Azure OpenAI GPT-4o-mini |
+| Document Parsing | `python-docx` + `pdfplumber` |
+| GRC Inventory | `pandas` + `openpyxl` |
+| LLM Client | `openai` SDK (Azure) |
+| Report Export | `openpyxl` (7-sheet styled Excel) |
+| Deployment | Local / Docker |
 
 ---
 
@@ -129,61 +173,52 @@ This Proof of Concept (PoC) automates the end-to-end process of:
 DB_POC_Fines_Penalities/
 │
 ├── docs/
-│   ├── PoC_highlevel steps.docx   # Original PoC specification
-│   └── grc_inventory.xlsx          # GRC Control Inventory (input)
+│   ├── PoC_highlevel steps.docx      ← Original PoC specification
+│   ├── grc_inventory.xlsx             ← GRC inventory (policy + control dual-role)
+│   └── Final Notice 2026_DMBL.pdf    ← Sample enforcement document
 │
 ├── app/
-│   ├── __init__.py                 # Package init
-│   ├── parser.py                   # Step 1: DOCX/PDF text extraction
-│   ├── extractor.py                # Step 2: LLM JSON extraction
-│   ├── inventory.py                # Step 3: Excel GRC inventory loader
-│   ├── comparator.py               # Step 4: LLM gap analysis comparison
-│   └── reporter.py                 # Step 5: DataFrame + Excel report generator
+│   ├── __init__.py
+│   ├── parser.py       ← Step 1: DOCX/PDF text extraction
+│   ├── extractor.py    ← Step 2: Regulator-agnostic LLM extraction (13 fields)
+│   ├── inventory.py    ← Step 3: Dual-role inventory loader (policy + control views)
+│   ├── comparator.py   ← Step 4: Two-layer LLM comparison engine
+│   └── reporter.py     ← Step 5: DataFrames + 7-sheet Excel export
 │
-├── streamlit_app.py                # Main Streamlit UI entry point
-├── config.py                       # Azure OpenAI config loader
-├── requirements.txt                # Python dependencies
-├── Dockerfile                      # Docker container definition
-├── .env.example                    # Environment variable template
-├── .env                            # Your actual credentials (DO NOT commit)
-└── README.md                       # This guide
+├── streamlit_app.py    ← Main UI (5-step pipeline, 4 result tabs)
+├── config.py           ← Azure OpenAI config loader
+├── requirements.txt    ← Python dependencies
+├── Dockerfile          ← Container definition
+├── .env.example        ← Credential template
+├── .gitignore
+└── README.md
 ```
 
 ---
 
 ## Prerequisites
 
-- **Python 3.11+** — [Download](https://www.python.org/downloads/)
-- **Azure OpenAI resource** with a `gpt-4o` deployment
-  - Azure subscription required
-  - Create resource at: [Azure Portal](https://portal.azure.com)
-- **Git** (optional, for cloning)
+- **Python 3.11+**
+- **Azure OpenAI** resource with a `gpt-4o` deployment
+- **Azure subscription** — create resource at [Azure Portal](https://portal.azure.com)
 
 ---
 
 ## Installation
 
-### 1. Clone or navigate to the project directory
-
 ```bash
+# 1. Navigate to project directory
 cd DB_POC_Fines_Penalities
-```
 
-### 2. Create a virtual environment (recommended)
+# 2. Create virtual environment
+python -m venv .venv
 
-```bash
 # Windows
-python -m venv .venv
 .venv\Scripts\activate
-
-# macOS / Linux
-python -m venv .venv
+# macOS/Linux
 source .venv/bin/activate
-```
 
-### 3. Install dependencies
-
-```bash
+# 3. Install dependencies
 pip install -r requirements.txt
 ```
 
@@ -191,46 +226,33 @@ pip install -r requirements.txt
 
 ## Configuration
 
-### 1. Create your `.env` file
-
-Copy the example template:
+### 1. Create `.env` from template
 
 ```bash
 # Windows
 copy .env.example .env
 
-# macOS / Linux
+# macOS/Linux
 cp .env.example .env
 ```
 
-### 2. Fill in your Azure OpenAI credentials
-
-Open `.env` and populate all values:
+### 2. Fill in Azure OpenAI credentials
 
 ```env
-AZURE_OPENAI_ENDPOINT=https://<your-resource-name>.openai.azure.com/
+AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
 AZURE_OPENAI_API_KEY=<your-api-key>
 AZURE_OPENAI_DEPLOYMENT=gpt-4o
 AZURE_OPENAI_API_VERSION=2024-02-01
 ```
 
-| Variable | Where to find it |
+| Variable | Where to find |
 |---|---|
-| `AZURE_OPENAI_ENDPOINT` | Azure Portal → Your OpenAI resource → Keys and Endpoint |
-| `AZURE_OPENAI_API_KEY` | Azure Portal → Your OpenAI resource → Keys and Endpoint |
-| `AZURE_OPENAI_DEPLOYMENT` | Azure OpenAI Studio → Deployments → your deployment name |
-| `AZURE_OPENAI_API_VERSION` | Use `2024-02-01` (or check Azure docs for latest) |
+| `AZURE_OPENAI_ENDPOINT` | Azure Portal → OpenAI resource → Keys and Endpoint |
+| `AZURE_OPENAI_API_KEY` | Azure Portal → OpenAI resource → Keys and Endpoint |
+| `AZURE_OPENAI_DEPLOYMENT` | Azure OpenAI Studio → Deployments (e.g. `gpt-4o-mini`) |
+| `AZURE_OPENAI_API_VERSION` | Use `2024-02-01` |
 
-> ⚠️ **Never commit your `.env` file to source control.** Add it to `.gitignore`.
-
-### 3. Verify GRC inventory path
-
-The app auto-loads `docs/grc_inventory.xlsx`. If you move the file, update `GRC_INVENTORY_PATH` in `.env`:
-
-```env
-GRC_INVENTORY_PATH=docs/grc_inventory.xlsx
-GRC_SHEET_NAME=grc_control_inv1
-```
+> ⚠️ Never commit `.env` to source control — it is in `.gitignore`.
 
 ---
 
@@ -240,68 +262,68 @@ GRC_SHEET_NAME=grc_control_inv1
 streamlit run streamlit_app.py
 ```
 
-The app will open automatically in your browser at:
-```
-http://localhost:8501
-```
-
-To stop the server: press `Ctrl+C` in the terminal.
+Opens at `http://localhost:8501`. Stop with `Ctrl+C`.
 
 ---
 
 ## Using the Application
 
-### Step-by-Step Walkthrough
+### Step-by-Step
 
 #### 1️⃣ Upload Document
-- Click **Browse files** or drag and drop your enforcement document
-- Supported: `.docx` (Word) and `.pdf`
-- The document text is extracted and a preview is shown
+- Drag and drop or browse for any enforcement document (DOCX or PDF)
+- Regulator and domain are **auto-detected** — no configuration needed
 
-#### 2️⃣ Extract Data
-- Click **🔍 Extract Data**
-- GPT-4o analyses the document and extracts 13 structured fields
-- View the extraction summary metrics and expand the full JSON
+#### 2️⃣ Extract Intelligence
+- Click **Extract Intelligence**
+- GPT-4o extracts 13 fields and shows auto-detected metadata:
+  - Regulator, Jurisdiction, Entity, Penalty, Domain, Notice Date
 
 #### 3️⃣ GRC Inventory
-- Automatically loaded from `docs/grc_inventory.xlsx`
-- Expand the preview to see all 7 controls
+- Auto-loaded from `docs/grc_inventory.xlsx`
+- Each row is used as **both** a policy statement and an operational control
 
 #### 4️⃣ Run Gap Analysis
-- Click **🤖 Run Gap Analysis**
-- GPT-4o compares each enforcement finding against each GRC control
-- Typically takes 20–40 seconds
+- Click **Run Gap Analysis**
+- GPT-4o performs two-layer comparison (30–60 seconds)
 
-#### 5️⃣ View Results & Download
-- Review the **Overall Assessment** metrics (risk rating, coverage counts)
-- Read the **Executive Summary**
-- Filter the **Gap Analysis Table** by coverage classification
-- Review **Unmatched Findings** (findings with no matching control)
-- Click **📥 Download Excel Report** to save the full report
+#### 5️⃣ View Results
+Four tabs in the results section:
+
+| Tab | Contents |
+|---|---|
+| **Policy Layer** | Primary shift-left analysis — policy intent coverage with ⚡ signals |
+| **Control Layer** | Secondary operational analysis — control mechanism coverage |
+| **Stakeholder Signals** | Who needs to act, what action, High/Medium/Low priority |
+| **Unaddressed Findings** | Themes with no matching policy or control + suggested new items |
+
+Click **Download Excel Report** for the full 7-sheet workbook.
 
 ---
 
 ## GRC Inventory Format
 
-The `docs/grc_inventory.xlsx` file must contain a sheet named `grc_control_inv1` with the following columns:
+File: `docs/grc_inventory.xlsx`, sheet: `grc_control_inv1`
 
-| Column | Description | Example |
+### Required Columns
+
+| Column | Policy Role (Layer 1) | Control Role (Layer 2) |
 |---|---|---|
-| `control_id` | Unique control identifier | `MAB-SURV-001` |
-| `control_name` | Short control name | `Market Abuse Surveillance Monitoring` |
-| `control_objective` | What the control aims to achieve | `Detect potentially suspicious orders...` |
-| `control_description` | Detailed operational description | `Automated surveillance monitors all...` |
-| `control_type` | `Detective`, `Preventive`, or `Corrective` | `Detective` |
-| `frequency` | How often the control runs | `Daily`, `Monthly`, `Event Driven` |
-| `trigger` | What activates the control | `Order or transaction executed` |
-| `process` | Business process the control belongs to | `Market Abuse Surveillance` |
-| `regulatory_domain` | Regulatory domain | `Market Abuse` |
-| `owner` | Control owner role | `Head of Compliance` |
-| `status` | Control status | `Proposed`, `Active`, `Retired` |
+| `control_id` | Policy reference ID | Control ID |
+| `control_name` | Policy name | Control name |
+| `control_objective` | **Policy statement** ← primary | Supporting objective |
+| `control_description` | Supporting detail | **Operational control** ← primary |
+| `control_type` | — | Detective / Preventive / Corrective |
+| `frequency` | — | Daily / Monthly / Event Driven |
+| `trigger` | — | What activates the control |
+| `process` | Policy process area | Control process |
+| `regulatory_domain` | Policy domain | Control domain |
+| `owner` | Policy owner | Control owner |
+| `status` | Proposed / Active / Retired | Proposed / Active / Retired |
 
-### Current Inventory (7 Controls)
+### Current Inventory (7 Items)
 
-| Control ID | Control Name | Type |
+| ID | Name | Type |
 |---|---|---|
 | MAB-SURV-001 | Market Abuse Surveillance Monitoring | Detective |
 | MAB-STOR-002 | STOR Assessment and Regulatory Reporting | Detective |
@@ -315,27 +337,84 @@ The `docs/grc_inventory.xlsx` file must contain a sheet named `grc_control_inv1`
 
 ## Output Report
 
-The downloaded Excel report contains **5 sheets**:
+The downloaded Excel report contains **7 sheets**:
 
 | Sheet | Contents |
 |---|---|
-| **Summary** | Report metadata, coverage count table, overall risk rating, executive summary |
-| **Gap Analysis** | Per-control classification with rationale, related findings, enforcement evidence, recommended actions |
-| **Unmatched Findings** | Enforcement findings/themes with no matching control, risk implications, suggested new controls |
+| **Summary** | Shift-left headline, metadata, policy + control layer counts, risk rating, executive summary |
+| **Policy Gap Analysis** | Layer 1 — per-item policy coverage, rationale, enforcement evidence, shift-left signals, recommended actions |
+| **Control Gap Analysis** | Layer 2 — per-item control coverage, rationale, enforcement evidence, recommended actions |
+| **Stakeholder Signals** | Who needs to act, what action, High/Medium/Low priority per gap |
+| **Unaddressed Findings** | Enforcement themes with no matching policy or control, suggested new policies/controls |
 | **Enforcement Data** | All 13 extracted fields from the enforcement document |
-| **GRC Inventory** | Full GRC control inventory used in the analysis |
+| **GRC Inventory** | Full GRC inventory used in the analysis |
 
 ---
 
 ## Coverage Classifications
 
+### Policy Layer (Layer 1)
+
 | Classification | Meaning | Colour |
 |---|---|---|
-| ✅ **Covered** | The control directly and fully addresses the enforcement finding | 🟩 Green |
-| 🟡 **Partially Covered** | The control exists but is incomplete, narrow, or has documented gaps | 🟨 Yellow |
-| 📄 **Policy-Only Coverage** | Only a policy exists; no operational or detective control is in place | 🟦 Blue |
-| 🔴 **Potential Control Gap** | No control in the inventory addresses this finding | 🟥 Red |
-| ❓ **Insufficient Evidence** | Insufficient information to determine coverage | ⬜ Grey |
+| ✅ **Covered** | Policy intent fully addresses the enforcement finding | 🟩 Green |
+| 🟡 **Partially Covered** | Policy exists but is narrow or incomplete | 🟨 Yellow |
+| 🔴 **Potential Gap** | No policy addresses this finding | 🟥 Red |
+| ❓ **Insufficient Evidence** | Cannot determine from available information | ⬜ Grey |
+
+### Control Layer (Layer 2)
+
+| Classification | Meaning | Colour |
+|---|---|---|
+| ✅ **Covered** | Operational control fully addresses the finding | 🟩 Green |
+| 🟡 **Partially Covered** | Control exists but has documented gaps | 🟨 Yellow |
+| 📄 **Policy-Only Coverage** | Policy exists but no operational control | 🟦 Blue |
+| 🔴 **Potential Gap** | No control addresses this finding | 🟥 Red |
+| ❓ **Insufficient Evidence** | Cannot determine from available information | ⬜ Grey |
+
+### Gap Severity
+
+| Severity | Meaning |
+|---|---|
+| 🔴 **Critical** | Immediate risk of regulatory action |
+| 🟠 **High** | Significant gap requiring urgent remediation |
+| 🟡 **Medium** | Gap requiring planned remediation |
+| 🟢 **Low** | Minor gap with limited risk exposure |
+
+---
+
+## Supported Regulators & Domains
+
+The system auto-detects the regulator and domain from the document content.
+
+### Regulators (non-exhaustive)
+
+| Regulator | Jurisdiction |
+|---|---|
+| FCA — Financial Conduct Authority | United Kingdom |
+| PRA — Prudential Regulation Authority | United Kingdom |
+| DFS — NY Dept of Financial Services | USA (New York) |
+| SEC — Securities and Exchange Commission | USA (Federal) |
+| FINRA — Financial Industry Regulatory Authority | USA |
+| MAS — Monetary Authority of Singapore | Singapore |
+| EBA — European Banking Authority | European Union |
+| BaFin | Germany |
+| ACPR | France |
+| Any other financial regulator | Any jurisdiction |
+
+### Compliance Domains (non-exhaustive)
+
+- Market Abuse / Surveillance / STOR
+- AML / Anti-Money Laundering / CFT
+- Sanctions / Financial Crime
+- Trade Surveillance / Reporting (MiFID, EMIR)
+- Conduct Risk / Consumer Duty / Suitability
+- Operational Risk / Resilience / BCM
+- Capital / Prudential / ICAAP
+- Data Protection / GDPR / Privacy
+- Insider Dealing / Front Running
+- Stop-Loss Manipulation / Order Flow
+
 
 ---
 
