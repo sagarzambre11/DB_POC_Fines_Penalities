@@ -12,7 +12,6 @@ AI-powered, regulator-agnostic gap analysis pipeline:
 """
 
 import time
-import pandas as pd
 import streamlit as st
 
 from config import AzureOpenAIConfig, AppConfig
@@ -89,6 +88,38 @@ with st.sidebar:
     st.markdown(f"**LLM:** `{AzureOpenAIConfig.DEPLOYMENT}`")
     st.markdown("**Approach:** Shift-Left Compliance Intelligence")
 
+    # ── Token usage summary ──────────────────────────────────────────────────
+    st.divider()
+    st.markdown("## 🔢 Token Usage")
+    ext_usage = (st.session_state.get("extracted_data") or {}).get("_token_usage", {})
+    cmp_usage = (st.session_state.get("comparison") or {}).get("_token_usage", {})
+    has_usage = ext_usage or cmp_usage
+
+    if not has_usage:
+        st.caption("Token counts will appear here after running the pipeline.")
+    else:
+        if ext_usage:
+            st.markdown("**Step 2 — Extraction**")
+            st.markdown(
+                f"Input: `{ext_usage.get('prompt_tokens', 0):,}` &nbsp;|&nbsp; "
+                f"Output: `{ext_usage.get('completion_tokens', 0):,}` &nbsp;|&nbsp; "
+                f"Total: `{ext_usage.get('total_tokens', 0):,}`"
+            )
+        if cmp_usage:
+            st.markdown("**Step 4 — Gap Analysis**")
+            st.markdown(
+                f"Input: `{cmp_usage.get('prompt_tokens', 0):,}` &nbsp;|&nbsp; "
+                f"Output: `{cmp_usage.get('completion_tokens', 0):,}` &nbsp;|&nbsp; "
+                f"Total: `{cmp_usage.get('total_tokens', 0):,}`"
+            )
+        if ext_usage and cmp_usage:
+            grand_total = (
+                ext_usage.get("total_tokens", 0)
+                + cmp_usage.get("total_tokens", 0)
+            )
+            st.markdown("---")
+            st.markdown(f"**🏷️ Grand Total: `{grand_total:,}` tokens**")
+
 # ---------------------------------------------------------------------------
 # Title
 # ---------------------------------------------------------------------------
@@ -108,6 +139,23 @@ for key in ["document_text", "extracted_data", "inventory", "comparison",
             "uploaded_filename"]:
     if key not in st.session_state:
         st.session_state[key] = None
+
+# ---------------------------------------------------------------------------
+# Token usage helper
+# ---------------------------------------------------------------------------
+def _render_token_badge(usage: dict, label: str = "") -> None:
+    """Render a compact token usage info box."""
+    if not usage:
+        return
+    prompt = usage.get("prompt_tokens", 0)
+    completion = usage.get("completion_tokens", 0)
+    total = usage.get("total_tokens", 0)
+    prefix = f"**{label}** — " if label else ""
+    st.caption(
+        f"🔢 {prefix}"
+        f"Input: **{prompt:,}** · Output: **{completion:,}** · "
+        f"Total: **{total:,}** tokens"
+    )
 
 # ---------------------------------------------------------------------------
 # STEP 1 — Upload Document
@@ -173,6 +221,10 @@ else:
                 st.session_state.extracted_data = None
 
     if st.session_state.extracted_data:
+        _render_token_badge(
+            st.session_state.extracted_data.get("_token_usage", {}),
+            label="Step 2 token usage"
+        )
         summary = get_extraction_summary(st.session_state.extracted_data)
 
         # Auto-detected metadata banner
@@ -230,7 +282,7 @@ if st.session_state.inventory:
 
     with st.expander("📊 GRC Inventory Preview", expanded=False):
         inv_df = inventory_to_dataframe(st.session_state.inventory)
-        st.dataframe(inv_df, width="stretch", hide_index=True)
+        st.dataframe(inv_df, use_container_width=True, hide_index=True)
 
 st.divider()
 
@@ -262,20 +314,34 @@ else:
                                 use_container_width=True)
 
     if analyse_btn:
-        with st.spinner(
-            f"{AzureOpenAIConfig.DEPLOYMENT} running two-layer gap analysis (Policy + Control)... "
-            "This may take 30–60 seconds."
-        ):
-            try:
-                t0 = time.time()
-                st.session_state.comparison = compare_findings_to_inventory(
-                    st.session_state.extracted_data,
-                    st.session_state.inventory,
-                )
-                st.success(f"✅ Gap analysis complete in {time.time() - t0:.1f}s.")
-            except Exception as e:
-                st.error(f"Gap analysis failed: {e}")
-                st.session_state.comparison = None
+        _progress_bar = st.progress(0)
+        _status_text = st.empty()
+
+        def _on_batch_progress(current: int, total: int) -> None:
+            _progress_bar.progress(current / total)
+            _status_text.text(
+                f"Analysing batch {current}/{total} "
+                f"({current * 6} of ~{total * 6} inventory items processed)..."
+            )
+
+        try:
+            t0 = time.time()
+            st.session_state.comparison = compare_findings_to_inventory(
+                st.session_state.extracted_data,
+                st.session_state.inventory,
+                progress_callback=_on_batch_progress,
+            )
+            _progress_bar.progress(1.0)
+            _status_text.empty()
+            elapsed = time.time() - t0
+            st.success(f"✅ Gap analysis complete in {elapsed:.1f}s.")
+            _render_token_badge(
+                st.session_state.comparison.get("_token_usage", {}),
+                label="Step 4 token usage"
+            )
+        except Exception as e:
+            st.error(f"Gap analysis failed: {e}")
+            st.session_state.comparison = None
 
 st.divider()
 
@@ -358,7 +424,7 @@ else:
 
         st.dataframe(
             filtered_policy.style.map(_style_policy, subset=["Policy Coverage"]),
-            width="stretch", hide_index=True, height=400,
+            use_container_width=True, hide_index=True, height=400,
         )
 
         # Shift-left signal callouts
@@ -406,7 +472,7 @@ else:
 
         st.dataframe(
             filtered_control.style.map(_style_control, subset=["Control Coverage"]),
-            width="stretch", hide_index=True, height=400,
+            use_container_width=True, hide_index=True, height=400,
         )
 
     # --- Stakeholder Signals Tab ---
@@ -438,7 +504,7 @@ else:
 
             st.dataframe(
                 filtered_signals.style.map(_style_priority, subset=["Priority"]),
-                width="stretch", hide_index=True, height=400,
+                use_container_width=True, hide_index=True, height=400,
             )
 
             # High priority signal callouts
@@ -471,7 +537,7 @@ else:
                 f"**{len(unaddressed_df)} enforcement theme(s)** have no matching "
                 "policy or control. Review the suggested policies and controls below."
             )
-            st.dataframe(unaddressed_df, width="stretch", hide_index=True)
+            st.dataframe(unaddressed_df, use_container_width=True, hide_index=True)
 
     # ── Download Report ──────────────────────────────────────────────────────
     st.divider()
@@ -490,7 +556,6 @@ else:
             file_name=filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
-            width="content",
         )
         st.caption(
             "Report contains 7 sheets: Summary, Policy Gap Analysis, Control Gap Analysis, "
@@ -504,8 +569,8 @@ else:
 # ---------------------------------------------------------------------------
 st.divider()
 st.markdown(
-    "<div style='text-align:center;color:#aaa;font-size:.8rem;'>"
-    "Regulatory Enforcement Intelligence PoC v2 · Azure OpenAI GPT-4o · "
+    f"<div style='text-align:center;color:#aaa;font-size:.8rem;'>"
+    f"Regulatory Enforcement Intelligence PoC v2 · {AzureOpenAIConfig.DEPLOYMENT} · "
     "Universal — FCA | DFS | SEC | MAS | FINRA · For internal use only · Not legal advice"
     "</div>",
     unsafe_allow_html=True,

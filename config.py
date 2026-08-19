@@ -40,9 +40,13 @@ class AppConfig:
     GRC_SHEET_NAME: str = os.getenv("GRC_SHEET_NAME", "grc_control_inv1")
 
     # LLM generation parameters
-    MAX_TOKENS_EXTRACTION: int = 4096
-    MAX_TOKENS_COMPARISON: int = 16384  # gap analysis output is large (one entry per inventory item)
-    TEMPERATURE: float = 0.0  # deterministic for compliance use-cases
+    # gpt-5-mini is a REASONING model: max_completion_tokens covers reasoning + output tokens.
+    # Reasoning can consume thousands of tokens before any output is produced.
+    # Values below 16,000 cause the model to exhaust all tokens on reasoning → empty output.
+    MAX_TOKENS_EXTRACTION: int = 25000   # reasoning + structured JSON output
+    MAX_TOKENS_COMPARISON: int = 25000   # reasoning + batch gap analysis JSON
+    MAX_TOKENS_SUMMARY: int = 16000      # reasoning + overall assessment JSON
+    # Note: temperature is NOT passed to gpt-5-mini (unsupported parameter)
 
     # Coverage classification labels
     COVERAGE_LABELS = [

@@ -8,7 +8,7 @@ Produces:
   - Control Gap DataFrame  (Layer 2 — operational signal)
   - Stakeholder Signals DataFrame
   - Unaddressed Findings DataFrame
-  - Downloadable 6-sheet Excel workbook
+  - Downloadable 7-sheet Excel workbook
 """
 
 import io
@@ -243,7 +243,7 @@ def generate_excel_report(
     inventory: list[dict],
 ) -> bytes:
     """
-    Generate a 6-sheet Excel workbook with the full two-layer gap analysis.
+    Generate a 7-sheet Excel workbook with the full two-layer gap analysis.
 
     Sheets:
       1. Summary              — Overall assessment, shift-left headline, risk rating

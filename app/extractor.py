@@ -10,8 +10,87 @@ Design principle: fully regulator-agnostic and domain-agnostic.
 """
 
 import json
+import time
 from openai import AzureOpenAI, OpenAI
 from config import AzureOpenAIConfig, AppConfig
+
+# ---------------------------------------------------------------------------
+# Shared LLM utilities
+# ---------------------------------------------------------------------------
+
+def _build_client() -> "OpenAI | AzureOpenAI":
+    """Return the correct OpenAI client based on the configured endpoint."""
+    _endpoint = AzureOpenAIConfig.ENDPOINT.rstrip("/")
+    if "services.ai.azure.com" in _endpoint:
+        return OpenAI(
+            base_url=f"{_endpoint}/openai/v1/",
+            api_key=AzureOpenAIConfig.API_KEY,
+        )
+    return AzureOpenAI(
+        azure_endpoint=AzureOpenAIConfig.ENDPOINT,
+        api_key=AzureOpenAIConfig.API_KEY,
+        api_version=AzureOpenAIConfig.API_VERSION,
+    )
+
+
+def _strip_json_fences(text: str) -> str:
+    """Remove markdown code fences (```json … ```) wrapping a JSON response."""
+    text = text.strip()
+    if text.startswith("```"):
+        # Drop the opening fence line (```json or ```)
+        newline = text.find("\n")
+        text = text[newline + 1:] if newline != -1 else text[3:]
+        # Drop the closing fence
+        if text.endswith("```"):
+            text = text[:-3]
+    return text.strip()
+
+
+def _call_llm_with_retry(client, max_retries: int = 2, **kwargs) -> tuple[str, dict]:
+    """
+    Call client.chat.completions.create with exponential-backoff retry.
+
+    Returns:
+        (content, usage) where content is the stripped response string and
+        usage is a dict with prompt_tokens, completion_tokens, total_tokens.
+
+    Raises RuntimeError if all retries are exhausted or content is empty.
+    """
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = client.chat.completions.create(**kwargs)
+            content = _strip_json_fences(
+                response.choices[0].message.content or ""
+            )
+            usage = {}
+            if response.usage:
+                usage = {
+                    "prompt_tokens": response.usage.prompt_tokens,
+                    "completion_tokens": response.usage.completion_tokens,
+                    "total_tokens": response.usage.total_tokens,
+                }
+            if content:
+                return content, usage
+            # Empty content — retry
+        except Exception as exc:
+            last_exc = exc
+        if attempt < max_retries:
+            time.sleep(2 ** attempt)  # 1 s, 2 s
+    raise RuntimeError(
+        f"LLM returned empty/invalid response after {max_retries + 1} attempts."
+        + (f" Last error: {last_exc}" if last_exc else "")
+    )
+
+
+def _sum_usage(a: dict, b: dict) -> dict:
+    """Merge two token usage dicts by summing each field."""
+    return {
+        "prompt_tokens": a.get("prompt_tokens", 0) + b.get("prompt_tokens", 0),
+        "completion_tokens": a.get("completion_tokens", 0) + b.get("completion_tokens", 0),
+        "total_tokens": a.get("total_tokens", 0) + b.get("total_tokens", 0),
+    }
+
 
 # ---------------------------------------------------------------------------
 # Extraction system prompt — fully regulator-agnostic
@@ -168,25 +247,11 @@ def extract_enforcement_data(document_text: str) -> dict:
             "Please update your .env file."
         )
 
-    # Use standard OpenAI client for Azure AI Foundry (services.ai.azure.com)
-    # endpoints which expose an OpenAI-compatible /openai/v1/ surface and do
-    # not require the ?api-version query parameter that AzureOpenAI always adds.
-    _endpoint = AzureOpenAIConfig.ENDPOINT.rstrip("/")
-    if "services.ai.azure.com" in _endpoint:
-        client = OpenAI(
-            base_url=f"{_endpoint}/openai/v1/",
-            api_key=AzureOpenAIConfig.API_KEY,
-        )
-    else:
-        client = AzureOpenAI(
-            azure_endpoint=AzureOpenAIConfig.ENDPOINT,
-            api_key=AzureOpenAIConfig.API_KEY,
-            api_version=AzureOpenAIConfig.API_VERSION,
-        )
-
+    client = _build_client()
     user_prompt = EXTRACTION_USER_PROMPT_TEMPLATE.format(document_text=document_text)
 
-    response = client.chat.completions.create(
+    raw_content, usage = _call_llm_with_retry(
+        client,
         model=AzureOpenAIConfig.DEPLOYMENT,
         messages=[
             {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
@@ -194,8 +259,6 @@ def extract_enforcement_data(document_text: str) -> dict:
         ],
         max_completion_tokens=AppConfig.MAX_TOKENS_EXTRACTION,
     )
-
-    raw_content = (response.choices[0].message.content or "").strip()
 
     try:
         extracted = json.loads(raw_content)
@@ -205,6 +268,8 @@ def extract_enforcement_data(document_text: str) -> dict:
             f"Raw response (first 500 chars):\n{raw_content[:500]}"
         ) from exc
 
+    # Attach token usage as metadata (underscore prefix = internal field)
+    extracted["_token_usage"] = usage
     return extracted
 
 

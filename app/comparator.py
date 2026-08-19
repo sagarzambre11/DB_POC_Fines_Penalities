@@ -3,159 +3,258 @@ app/comparator.py
 -----------------
 Step 4: Two-layer LLM-based comparison of enforcement findings against the GRC inventory.
 
+Optimised implementation:
+  - Condensed enforcement JSON (only gap-relevant fields sent to LLM)
+  - Batched comparison (BATCH_SIZE items per call) to prevent output truncation
+  - Final summary call for overall_assessment and unaddressed_findings
+  - JSON fence stripping + exponential-backoff retry (shared with extractor)
+
 Layer 1 — POLICY COVERAGE (primary):
-  Maps enforcement findings against the policy intent (control_objective) of each
-  inventory row. Answers: "Does your firm have a policy that would have required
-  this problem to be addressed?"
+  Answers: "Does your firm have a policy that would have required this to be addressed?"
 
 Layer 2 — CONTROL COVERAGE (secondary):
-  Maps enforcement findings against the operational control (control_description)
-  of each inventory row. Answers: "Is there an operational control that would have
-  detected or prevented this?"
-
-Both layers are assessed in a single GPT-4o call for efficiency.
-The "shift left" value: policy gaps are the primary signal; control gaps are the
-downstream operational consequence.
+  Answers: "Is there an operational control that would have detected or prevented this?"
 """
 
 import json
 from openai import AzureOpenAI, OpenAI
 from config import AzureOpenAIConfig, AppConfig
 from app.inventory import inventory_to_combined_prompt_text
+from app.extractor import _build_client, _call_llm_with_retry, _sum_usage
 
 # ---------------------------------------------------------------------------
-# Two-layer comparison system prompt
+# Batching configuration
 # ---------------------------------------------------------------------------
 
-COMPARISON_SYSTEM_PROMPT = """You are a senior GRC (Governance, Risk and Compliance) analyst
-specialising in regulatory enforcement gap analysis and compliance intelligence.
+BATCH_SIZE = 6  # inventory items assessed per LLM call
 
-Your task is to perform a TWO-LAYER gap analysis comparing enforcement findings from a
-regulatory action (any regulator, any jurisdiction, any domain) against a firm's
-GRC inventory that serves dual purpose as both a policy corpus and a control inventory.
+# ---------------------------------------------------------------------------
+# Condensed enforcement helper
+# ---------------------------------------------------------------------------
 
-=== TWO LAYERS OF ANALYSIS ===
+def _condense_enforcement_for_comparison(extracted: dict) -> dict:
+    """
+    Return only the fields from the extraction result that are relevant
+    to gap analysis.  Reduces comparison input tokens by ~60%.
 
-LAYER 1 — POLICY COVERAGE (primary, "shift left" signal):
-  Assess whether the firm's POLICY INTENT (the objective/statement) would have
-  required the governance, process, or risk management that was absent in the
-  enforcement case. A policy gap means the firm's framework did not mandate the
-  right behaviour at the strategic/governance level.
+    Excluded: source_citations, customer_or_market_impact details,
+    confidence_score, settlement_discount, reference_number, etc.
+    """
+    action = extracted.get("enforcement_action", {})
+    return {
+        "regulator": extracted.get("regulator", {}),
+        "jurisdiction": extracted.get("jurisdiction"),
+        "regulatory_domain": extracted.get("regulatory_domain", []),
+        "regulated_entity": {
+            "name": extracted.get("regulated_entity", {}).get("name"),
+            "entity_type": extracted.get("regulated_entity", {}).get("entity_type"),
+        },
+        "scenario_description": extracted.get("scenario_description"),
+        "misconduct_control_failure_themes": extracted.get(
+            "misconduct_control_failure_themes", []
+        ),
+        "root_cause_evidence": extracted.get("root_cause_evidence", []),
+        "regulatory_requirements": extracted.get("regulatory_requirements", []),
+        "penalty": (
+            f"{action.get('penalty_currency', '')} {action.get('penalty_amount', '')}".strip()
+        ),
+    }
 
-LAYER 2 — CONTROL COVERAGE (secondary, operational signal):
-  Assess whether the firm has an OPERATIONAL CONTROL (the actual mechanism) that
-  would have detected, prevented, or mitigated the specific failure described
-  in the enforcement action.
 
-=== COVERAGE CLASSIFICATIONS (use EXACTLY these labels) ===
+# ---------------------------------------------------------------------------
+# Batch gap analysis prompt
+# ---------------------------------------------------------------------------
 
-  "Covered"               : Fully addressed at this layer.
-  "Partially Covered"     : Exists but incomplete, narrow, or with documented gaps.
-  "Policy-Only Coverage"  : A policy/objective exists but no operational control (Layer 2 only).
-  "Potential Gap"         : No matching policy/control addresses this finding.
-  "Insufficient Evidence" : Cannot determine from available information.
+BATCH_SYSTEM_PROMPT = """You are a senior GRC (Governance, Risk and Compliance) analyst
+specialising in regulatory enforcement gap analysis.
 
-=== STAKEHOLDER SIGNAL ===
+Perform a TWO-LAYER gap analysis for each inventory item provided:
 
-For each gap or partial coverage, identify the most appropriate stakeholder to act:
-  - "Policy Owner"    : Policy needs creating or updating
-  - "Control Owner"   : Control needs strengthening or adding
-  - "Risk Manager"    : Risk assessment needs updating
-  - "Compliance Head" : Escalation or governance intervention needed
-  - "Technology"      : System/tooling change required
+LAYER 1 — POLICY COVERAGE: Does the firm's POLICY INTENT (objective/statement) address the enforcement finding?
+LAYER 2 — CONTROL COVERAGE: Does the OPERATIONAL CONTROL (mechanism/procedure) address the enforcement finding?
 
-=== REQUIRED JSON OUTPUT ===
+Coverage labels (use EXACTLY these):
+  "Covered"               — Fully addressed at this layer
+  "Partially Covered"     — Exists but incomplete or narrow
+  "Policy-Only Coverage"  — Policy exists but no operational control (Layer 2 only)
+  "Potential Gap"         — No matching policy/control
+  "Insufficient Evidence" — Cannot determine
 
+Stakeholder roles: "Policy Owner" | "Control Owner" | "Risk Manager" | "Compliance Head" | "Technology"
+
+Return ONLY a JSON object in this exact format:
 {
   "gap_analysis": [
     {
-      "id": "<control_id from inventory>",
-      "name": "<control_name from inventory>",
+      "id": "<control_id>",
+      "name": "<control_name>",
       "domain": "<regulatory_domain>",
-      "owner": "<owner from inventory>",
-      "related_enforcement_themes": ["<theme from misconduct_control_failure_themes>"],
-      "related_root_causes": ["<finding from root_cause_evidence>"],
+      "owner": "<owner>",
+      "related_enforcement_themes": ["<theme>"],
+      "related_root_causes": ["<finding>"],
       "policy_layer": {
-        "coverage_classification": "<one of the 5 labels>",
-        "rationale": "<specific explanation referencing the enforcement finding>",
-        "enforcement_evidence": "<direct quote or paraphrase from the enforcement findings>",
-        "shift_left_signal": "<proactive signal: what this means for the firm's policy framework>",
+        "coverage_classification": "<label>",
+        "rationale": "<explanation referencing the enforcement finding>",
+        "enforcement_evidence": "<direct quote or paraphrase>",
+        "shift_left_signal": "<proactive forward-looking signal>",
         "recommended_action": "<what the policy owner should do>"
       },
       "control_layer": {
-        "coverage_classification": "<one of the 5 labels>",
-        "rationale": "<specific explanation referencing the enforcement finding>",
-        "enforcement_evidence": "<direct quote or paraphrase from the enforcement findings>",
+        "coverage_classification": "<label>",
+        "rationale": "<explanation referencing the enforcement finding>",
+        "enforcement_evidence": "<direct quote or paraphrase>",
         "recommended_action": "<what the control owner should do>"
       },
       "stakeholder_signals": [
-        {
-          "stakeholder": "<stakeholder role>",
-          "signal": "<specific action signal for this stakeholder>",
-          "priority": "<High | Medium | Low>"
-        }
+        {"stakeholder": "<role>", "signal": "<action>", "priority": "<High|Medium|Low>"}
       ],
-      "overall_gap_severity": "<Critical | High | Medium | Low>"
+      "overall_gap_severity": "<Critical|High|Medium|Low>"
     }
-  ],
+  ]
+}
+
+RULES: Assess EVERY item in the batch. Return ONLY the JSON. No markdown. No explanation."""
+
+BATCH_USER_TEMPLATE = """Perform two-layer gap analysis for this batch of inventory items.
+
+=== ENFORCEMENT FINDINGS ===
+{enforcement_json}
+
+=== INVENTORY ITEMS (this batch) ===
+{inventory_text}
+
+Return only the JSON object as specified."""
+
+
+# ---------------------------------------------------------------------------
+# Summary / overall assessment prompt
+# ---------------------------------------------------------------------------
+
+SUMMARY_SYSTEM_PROMPT = """You are a senior GRC analyst. Based on the completed gap analysis results
+provided, generate the overall assessment and identify enforcement themes with no inventory coverage.
+
+Return ONLY a JSON object:
+{
   "overall_assessment": {
-    "regulator": "<auto-detected regulator from enforcement data>",
-    "jurisdiction": "<auto-detected jurisdiction>",
-    "regulatory_domain": ["<domain 1>", "<domain 2>"],
+    "regulator": "<regulator from enforcement data>",
+    "jurisdiction": "<jurisdiction>",
+    "regulatory_domain": ["<domain>"],
     "total_assessed": <number>,
     "policy_layer_summary": {
-      "covered": <number>,
-      "partially_covered": <number>,
-      "potential_gap": <number>,
-      "insufficient_evidence": <number>
+      "covered": <n>, "partially_covered": <n>, "potential_gap": <n>, "insufficient_evidence": <n>
     },
     "control_layer_summary": {
-      "covered": <number>,
-      "partially_covered": <number>,
-      "policy_only": <number>,
-      "potential_gap": <number>,
-      "insufficient_evidence": <number>
+      "covered": <n>, "partially_covered": <n>, "policy_only": <n>,
+      "potential_gap": <n>, "insufficient_evidence": <n>
     },
-    "overall_risk_rating": "<Critical | High | Medium | Low>",
-    "shift_left_headline": "<1-sentence headline summarising the shift-left value e.g. 'X out of Y policies need urgent review to prevent a similar enforcement action'>",
-    "executive_summary": "<3-4 sentence executive summary covering both policy and control gaps>"
+    "overall_risk_rating": "<Critical|High|Medium|Low>",
+    "shift_left_headline": "<1-sentence headline on shift-left value>",
+    "executive_summary": "<3-4 sentence executive summary of policy and control gaps>"
   },
   "unaddressed_findings": [
     {
-      "theme": "<enforcement theme or root cause with NO matching policy or control>",
+      "theme": "<enforcement theme with NO matching policy or control>",
       "risk_implication": "<why this gap is significant>",
-      "suggested_policy": "<description of a new policy statement needed>",
-      "suggested_control": "<description of a new operational control needed>",
+      "suggested_policy": "<new policy statement needed>",
+      "suggested_control": "<new operational control needed>",
       "suggested_owner": "<who should own this>"
     }
   ]
 }
 
-IMPORTANT RULES:
-- Assess EVERY item in the inventory at BOTH layers. Do not skip any.
-- The analysis must be based ENTIRELY on the enforcement findings provided.
-- Do NOT assume the regulator or domain — use what is in the enforcement data.
-- Return ONLY the JSON object. No markdown fences, no explanation.
-- Be specific: reference actual findings, themes and evidence from the enforcement data.
-- The shift_left_signal should be forward-looking and proactive, not retrospective.
-"""
+Rules: Return ONLY the JSON. No markdown. No explanation."""
 
-COMPARISON_USER_PROMPT_TEMPLATE = """Perform a two-layer gap analysis (Policy Layer + Control Layer)
-comparing the enforcement findings below against the GRC inventory.
+SUMMARY_USER_TEMPLATE = """Generate the overall assessment and unaddressed findings from:
 
-=== ENFORCEMENT FINDINGS (extracted from enforcement document) ===
+=== ENFORCEMENT CONTEXT ===
 {enforcement_json}
 
-=== GRC INVENTORY (serves as both Policy Corpus and Control Inventory) ===
-{inventory_text}
+=== COMPLETED GAP ANALYSIS RESULTS ===
+{gap_analysis_json}
 
-Instructions:
-1. For each inventory item, assess BOTH the Policy Layer (objective/intent) and Control Layer (operational mechanism).
-2. Identify enforcement themes and root causes that have NO matching policy or control.
-3. Generate stakeholder signals for each gap.
-4. Auto-use the regulator, jurisdiction and domain from the enforcement data — do not assume.
+Identify any enforcement themes or root causes not addressed by any inventory item."""
 
-Return only the JSON object as specified."""
+
+# ---------------------------------------------------------------------------
+# Internal batch processor
+# ---------------------------------------------------------------------------
+
+def _compare_batch(
+    client,
+    condensed_enforcement: dict,
+    batch: list[dict],
+) -> tuple[list[dict], dict]:
+    """
+    Run gap analysis for a single batch of inventory items.
+
+    Returns (gap_analysis list, token_usage dict) for this batch.
+    """
+    enforcement_json = json.dumps(condensed_enforcement, indent=2)
+    inventory_text = inventory_to_combined_prompt_text(batch)
+
+    user_prompt = BATCH_USER_TEMPLATE.format(
+        enforcement_json=enforcement_json,
+        inventory_text=inventory_text,
+    )
+
+    raw, usage = _call_llm_with_retry(
+        client,
+        model=AzureOpenAIConfig.DEPLOYMENT,
+        messages=[
+            {"role": "system", "content": BATCH_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_completion_tokens=AppConfig.MAX_TOKENS_COMPARISON,
+    )
+
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"LLM returned invalid JSON for batch: {exc}\n"
+            f"Raw response (first 500 chars):\n{raw[:500]}"
+        ) from exc
+
+    return result.get("gap_analysis", []), usage
+
+
+def _generate_summary(
+    client,
+    condensed_enforcement: dict,
+    all_gap_analysis: list[dict],
+) -> tuple[dict, dict]:
+    """
+    Generate overall_assessment and unaddressed_findings after all batches complete.
+
+    Returns (summary dict, token_usage dict).
+    """
+    enforcement_json = json.dumps(condensed_enforcement, indent=2)
+    gap_analysis_json = json.dumps({"gap_analysis": all_gap_analysis}, indent=2)
+
+    user_prompt = SUMMARY_USER_TEMPLATE.format(
+        enforcement_json=enforcement_json,
+        gap_analysis_json=gap_analysis_json,
+    )
+
+    raw, usage = _call_llm_with_retry(
+        client,
+        model=AzureOpenAIConfig.DEPLOYMENT,
+        messages=[
+            {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_completion_tokens=AppConfig.MAX_TOKENS_SUMMARY,
+    )
+
+    try:
+        summary = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"LLM returned invalid JSON for summary: {exc}\n"
+            f"Raw response (first 500 chars):\n{raw[:500]}"
+        ) from exc
+
+    return summary, usage
 
 
 # ---------------------------------------------------------------------------
@@ -165,26 +264,28 @@ Return only the JSON object as specified."""
 def compare_findings_to_inventory(
     extracted_enforcement: dict,
     inventory: list[dict],
+    progress_callback=None,
 ) -> dict:
     """
     Two-layer comparison of enforcement findings against the GRC inventory.
 
-    Layer 1: Policy coverage (strategic/governance level)
-    Layer 2: Control coverage (operational level)
-
-    Works for any regulator, jurisdiction, or regulatory domain.
+    Optimised: uses condensed enforcement JSON and batched LLM calls
+    (BATCH_SIZE items per call) to prevent output truncation and improve
+    response quality.
 
     Args:
         extracted_enforcement: Dict from extractor.extract_enforcement_data().
         inventory:             List of control dicts from inventory.load_inventory().
+        progress_callback:     Optional callable(current_batch, total_batches) for
+                               UI progress reporting.
 
     Returns:
         Structured comparison dict with gap_analysis, overall_assessment,
         and unaddressed_findings.
 
     Raises:
-        ValueError:   If the LLM response cannot be parsed as valid JSON.
-        RuntimeError: If Azure OpenAI config is missing or API call fails.
+        ValueError:   If any LLM response cannot be parsed as valid JSON.
+        RuntimeError: If Azure OpenAI config is missing or API calls fail.
     """
     missing = AzureOpenAIConfig.validate()
     if missing:
@@ -193,50 +294,36 @@ def compare_findings_to_inventory(
             "Please update your .env file."
         )
 
-    # Use standard OpenAI client for Azure AI Foundry (services.ai.azure.com)
-    # endpoints which expose an OpenAI-compatible /openai/v1/ surface and do
-    # not require the ?api-version query parameter that AzureOpenAI always adds.
-    _endpoint = AzureOpenAIConfig.ENDPOINT.rstrip("/")
-    if "services.ai.azure.com" in _endpoint:
-        client = OpenAI(
-            base_url=f"{_endpoint}/openai/v1/",
-            api_key=AzureOpenAIConfig.API_KEY,
-        )
-    else:
-        client = AzureOpenAI(
-            azure_endpoint=AzureOpenAIConfig.ENDPOINT,
-            api_key=AzureOpenAIConfig.API_KEY,
-            api_version=AzureOpenAIConfig.API_VERSION,
-        )
+    client = _build_client()
+    condensed = _condense_enforcement_for_comparison(extracted_enforcement)
 
-    enforcement_json_str = json.dumps(extracted_enforcement, indent=2)
-    inventory_text = inventory_to_combined_prompt_text(inventory)
+    # Split inventory into batches
+    batches = [
+        inventory[i: i + BATCH_SIZE]
+        for i in range(0, len(inventory), BATCH_SIZE)
+    ]
+    total_batches = len(batches)
+    all_gap_analysis: list[dict] = []
 
-    user_prompt = COMPARISON_USER_PROMPT_TEMPLATE.format(
-        enforcement_json=enforcement_json_str,
-        inventory_text=inventory_text,
-    )
+    total_usage: dict = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-    response = client.chat.completions.create(
-        model=AzureOpenAIConfig.DEPLOYMENT,
-        messages=[
-            {"role": "system", "content": COMPARISON_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        max_completion_tokens=AppConfig.MAX_TOKENS_COMPARISON,
-    )
+    for idx, batch in enumerate(batches):
+        gap_items, batch_usage = _compare_batch(client, condensed, batch)
+        all_gap_analysis.extend(gap_items)
+        total_usage = _sum_usage(total_usage, batch_usage)
+        if progress_callback:
+            progress_callback(idx + 1, total_batches)
 
-    raw_content = (response.choices[0].message.content or "").strip()
+    # Final call: overall_assessment + unaddressed_findings
+    summary, summary_usage = _generate_summary(client, condensed, all_gap_analysis)
+    total_usage = _sum_usage(total_usage, summary_usage)
 
-    try:
-        comparison = json.loads(raw_content)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"LLM returned invalid JSON during comparison: {exc}\n"
-            f"Raw response (first 500 chars):\n{raw_content[:500]}"
-        ) from exc
-
-    return comparison
+    return {
+        "gap_analysis": all_gap_analysis,
+        "overall_assessment": summary.get("overall_assessment", {}),
+        "unaddressed_findings": summary.get("unaddressed_findings", []),
+        "_token_usage": total_usage,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -244,15 +331,7 @@ def compare_findings_to_inventory(
 # ---------------------------------------------------------------------------
 
 def get_policy_gap_rows(comparison: dict) -> list[dict]:
-    """
-    Flatten the policy layer of gap_analysis into display-ready rows.
-
-    Args:
-        comparison: Dict from compare_findings_to_inventory().
-
-    Returns:
-        List of dicts suitable for a Pandas DataFrame.
-    """
+    """Flatten the policy layer of gap_analysis into display-ready rows."""
     rows = []
     for item in comparison.get("gap_analysis", []):
         pl = item.get("policy_layer", {})
@@ -273,15 +352,7 @@ def get_policy_gap_rows(comparison: dict) -> list[dict]:
 
 
 def get_control_gap_rows(comparison: dict) -> list[dict]:
-    """
-    Flatten the control layer of gap_analysis into display-ready rows.
-
-    Args:
-        comparison: Dict from compare_findings_to_inventory().
-
-    Returns:
-        List of dicts suitable for a Pandas DataFrame.
-    """
+    """Flatten the control layer of gap_analysis into display-ready rows."""
     rows = []
     for item in comparison.get("gap_analysis", []):
         cl = item.get("control_layer", {})
@@ -301,15 +372,7 @@ def get_control_gap_rows(comparison: dict) -> list[dict]:
 
 
 def get_stakeholder_signal_rows(comparison: dict) -> list[dict]:
-    """
-    Flatten stakeholder signals across all gap_analysis items into display-ready rows.
-
-    Args:
-        comparison: Dict from compare_findings_to_inventory().
-
-    Returns:
-        List of dicts suitable for a Pandas DataFrame.
-    """
+    """Flatten stakeholder signals across all gap_analysis items into display-ready rows."""
     rows = []
     for item in comparison.get("gap_analysis", []):
         for signal in item.get("stakeholder_signals", []):
@@ -325,15 +388,7 @@ def get_stakeholder_signal_rows(comparison: dict) -> list[dict]:
 
 
 def get_unaddressed_findings_rows(comparison: dict) -> list[dict]:
-    """
-    Flatten unaddressed_findings into display-ready rows.
-
-    Args:
-        comparison: Dict from compare_findings_to_inventory().
-
-    Returns:
-        List of dicts suitable for a Pandas DataFrame.
-    """
+    """Flatten unaddressed_findings into display-ready rows."""
     rows = []
     for item in comparison.get("unaddressed_findings", []):
         rows.append({
