@@ -192,7 +192,7 @@ def _render_results_inline() -> None:
             if not fdf.empty:
                 st.dataframe(
                     fdf.style.map(style_coverage, subset=["Controls Coverage"]),
-                    use_container_width=True, hide_index=True, height=320,
+                    width="stretch", hide_index=True, height=320,
                 )
                 # Shift-left signals for gaps
                 gaps = fdf[fdf["Controls Coverage"] == "Potential Gap"]
@@ -218,7 +218,7 @@ def _render_results_inline() -> None:
             if not fsdf.empty:
                 st.dataframe(
                     fsdf.style.map(style_priority, subset=["Priority"]),
-                    use_container_width=True, hide_index=True, height=320,
+                    width="stretch", hide_index=True, height=320,
                 )
                 for _, row in fsdf[fsdf["Priority"] == "High"].iterrows():
                     st.markdown(
@@ -233,7 +233,7 @@ def _render_results_inline() -> None:
             st.success("All enforcement themes are addressed by at least one control.")
         else:
             st.warning(f"**{len(udf)} theme(s)** have no matching control.")
-            st.dataframe(udf, use_container_width=True, hide_index=True)
+            st.dataframe(udf, width="stretch", hide_index=True)
 
 
 def _render_download_inline(key_suffix: str = "") -> None:

@@ -80,7 +80,7 @@ def render_sidebar() -> None:
         _render_token_usage()
 
         # ── Reset ─────────────────────────────────────────────────────────────
-        if st.button("🔄 Reset Everything", use_container_width=True, key="reset_btn"):
+        if st.button("🔄 Reset Everything", key="reset_btn"):
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
             st.rerun()
@@ -191,7 +191,7 @@ def _render_pipeline_log() -> None:
     log_html = "<br>".join(st.session_state.pipeline_log[-40:])
     st.markdown(f'<div class="plog">{log_html}</div>', unsafe_allow_html=True)
 
-    if st.button("Clear log", key="clear_log_btn", use_container_width=True):
+    if st.button("Clear log", key="clear_log_btn"):
         st.session_state.pipeline_log = []
         st.rerun()
 

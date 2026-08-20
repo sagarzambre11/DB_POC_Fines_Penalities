@@ -116,7 +116,7 @@ def _render_controls_gap_tab(cmp: dict) -> None:
     else:
         st.dataframe(
             fdf.style.map(style_coverage, subset=["Controls Coverage"]),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=380,
         )
@@ -162,7 +162,7 @@ def _render_stakeholder_tab(cmp: dict) -> None:
     else:
         st.dataframe(
             fdf.style.map(style_priority, subset=["Priority"]),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=380,
         )
@@ -193,7 +193,7 @@ def _render_unaddressed_tab(cmp: dict) -> None:
         return
 
     st.warning(f"**{len(df)} enforcement theme(s)** have no matching control.")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
 
 def _render_download_button() -> None:
@@ -209,7 +209,6 @@ def _render_download_button() -> None:
         file_name=st.session_state.xl_name or "enforcement_gap_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary",
-        use_container_width=True,
     )
     st.caption(
         "Report includes: Summary · Controls Gap Analysis · Stakeholder Signals · "
