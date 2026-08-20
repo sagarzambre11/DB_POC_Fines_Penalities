@@ -3,18 +3,24 @@ app/comparator.py
 -----------------
 Step 4: LLM-based comparison of enforcement findings against the GRC inventory.
 
-Optimised implementation:
-  - Condensed enforcement JSON (only gap-relevant fields sent to LLM)
-  - Batched comparison (BATCH_SIZE items per call) to prevent output truncation
-  - Final summary call for overall_assessment and unaddressed_findings
-  - JSON fence stripping + exponential-backoff retry (shared with extractor)
+Phase 2 — RAG-Enhanced Implementation:
+  1. Enforcement themes + root causes are embedded via the active provider
+     (Azure OpenAI or Google — configured in .env, no code changes needed).
+  2. Semantic search retrieves ONLY the most relevant controls from the vector
+     index (default: top 15 from up to MAX_RETRIEVED_CONTROLS).
+  3. Only those retrieved controls are assessed by the LLM — not the full inventory.
+  4. Batched LLM calls (BATCH_SIZE items per call) prevent output truncation.
+  5. A final summary call produces overall_assessment + unaddressed_findings.
+
+Mode selection (via use_rag parameter):
+  use_rag=True  (default) — RAG path: semantic retrieval → focused LLM analysis
+  use_rag=False           — Full-scan path: all controls batched (Phase 1 behaviour)
 
 Single Layer — CONTROLS COVERAGE:
-  Answers: "Does your firm have a Control that would have required this to be addressed?"
+  "Does your firm have a Control that would have required this to be addressed?"
 """
 
 import json
-from openai import AzureOpenAI, OpenAI
 from config import AzureOpenAIConfig, AppConfig
 from app.inventory import inventory_to_combined_prompt_text
 from app.extractor import _build_client, _call_llm_with_retry, _sum_usage
@@ -32,7 +38,7 @@ BATCH_SIZE = 6  # inventory items assessed per LLM call
 def _condense_enforcement_for_comparison(extracted: dict) -> dict:
     """
     Return only the fields from the extraction result that are relevant
-    to gap analysis.  Reduces comparison input tokens by ~60%.
+    to gap analysis. Reduces comparison input tokens by ~60%.
 
     Excluded: source_citations, customer_or_market_impact details,
     confidence_score, settlement_discount, reference_number, etc.
@@ -249,23 +255,37 @@ def compare_findings_to_inventory(
     extracted_enforcement: dict,
     inventory: list[dict],
     progress_callback=None,
+    use_rag: bool = True,
+    rag_collection=None,
 ) -> dict:
     """
-    Single-layer controls gap analysis of enforcement findings against the GRC inventory.
+    Controls gap analysis of enforcement findings against the GRC inventory.
 
-    Optimised: uses condensed enforcement JSON and batched LLM calls
-    (BATCH_SIZE items per call) to prevent output truncation and improve
-    response quality.
+    Phase 2 RAG mode (use_rag=True, default):
+      1. Extracts themes + root causes from the enforcement data
+      2. Runs semantic search to retrieve only the most relevant controls
+      3. Batches ONLY those retrieved controls to the LLM for assessment
+      4. Generates overall assessment and unaddressed findings
+
+    Full-scan mode (use_rag=False):
+      - Phase 1 behaviour: all controls batched regardless of relevance
 
     Args:
         extracted_enforcement: Dict from extractor.extract_enforcement_data().
         inventory:             List of control dicts from inventory.load_inventory().
-        progress_callback:     Optional callable(current_batch, total_batches) for
-                               UI progress reporting.
+        progress_callback:     Optional callable(message: str) for UI status updates.
+        use_rag:               If True (default), use semantic retrieval to pre-filter
+                               controls before LLM assessment. If False, assess all controls.
+        rag_collection:        Pre-built ChromaDB collection (optional). If None and
+                               use_rag=True, the collection is loaded/built automatically.
 
     Returns:
-        Structured comparison dict with gap_analysis, overall_assessment,
-        and unaddressed_findings.
+        Structured comparison dict with:
+          - gap_analysis:        List of per-control gap analysis results
+          - overall_assessment:  Summary metrics and executive summary
+          - unaddressed_findings: Enforcement themes with no matching control
+          - _token_usage:        Total token usage across all LLM calls
+          - _rag_metadata:       RAG retrieval info (controls assessed, reduction %)
 
     Raises:
         ValueError:   If any LLM response cannot be parsed as valid JSON.
@@ -281,24 +301,92 @@ def compare_findings_to_inventory(
     client = _build_client()
     condensed = _condense_enforcement_for_comparison(extracted_enforcement)
 
-    # Split inventory into batches
+    # ── RAG: semantic retrieval of relevant controls ───────────────────────────
+    controls_to_assess = inventory  # default: full inventory (full-scan mode)
+    rag_metadata = {
+        "mode": "full_scan",
+        "total_inventory": len(inventory),
+        "controls_assessed": len(inventory),
+        "reduction_pct": 0,
+    }
+
+    if use_rag:
+        try:
+            from app.retriever import retrieve_relevant_controls
+
+            themes = condensed.get("misconduct_control_failure_themes", [])
+            root_causes = condensed.get("root_cause_evidence", [])
+
+            if progress_callback:
+                progress_callback(
+                    f"🔍 Semantic search: finding relevant controls for "
+                    f"{len(themes)} enforcement themes..."
+                )
+
+            controls_to_assess = retrieve_relevant_controls(
+                themes=themes,
+                root_causes=root_causes,
+                inventory=inventory,
+                collection=rag_collection,
+            )
+
+            reduction_pct = (
+                (1 - len(controls_to_assess) / max(len(inventory), 1)) * 100
+            )
+            rag_metadata = {
+                "mode": "rag",
+                "total_inventory": len(inventory),
+                "controls_assessed": len(controls_to_assess),
+                "reduction_pct": round(reduction_pct, 1),
+            }
+
+            if progress_callback:
+                progress_callback(
+                    f"✅ Semantic search complete: {len(controls_to_assess)} of "
+                    f"{len(inventory)} controls selected "
+                    f"({reduction_pct:.0f}% reduction in LLM input)."
+                )
+
+        except Exception as exc:
+            # RAG failure: graceful fallback to full-scan to avoid data loss
+            if progress_callback:
+                progress_callback(
+                    f"⚠️ Semantic search failed ({exc}). "
+                    "Falling back to full inventory scan."
+                )
+            controls_to_assess = inventory
+            rag_metadata = {
+                "mode": "fallback_full_scan",
+                "total_inventory": len(inventory),
+                "controls_assessed": len(inventory),
+                "reduction_pct": 0,
+                "fallback_reason": str(exc),
+            }
+
+    # ── Batch the selected controls for LLM assessment ────────────────────────
     batches = [
-        inventory[i: i + BATCH_SIZE]
-        for i in range(0, len(inventory), BATCH_SIZE)
+        controls_to_assess[i: i + BATCH_SIZE]
+        for i in range(0, len(controls_to_assess), BATCH_SIZE)
     ]
     total_batches = len(batches)
     all_gap_analysis: list[dict] = []
-
     total_usage: dict = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     for idx, batch in enumerate(batches):
+        if progress_callback:
+            progress_callback(
+                f"🤖 Analysing batch {idx + 1}/{total_batches} "
+                f"({min((idx + 1) * BATCH_SIZE, len(controls_to_assess))} of "
+                f"{len(controls_to_assess)} controls processed)..."
+            )
         gap_items, batch_usage = _compare_batch(client, condensed, batch)
         all_gap_analysis.extend(gap_items)
         total_usage = _sum_usage(total_usage, batch_usage)
-        if progress_callback:
-            progress_callback(idx + 1, total_batches)
 
-    # Final call: overall_assessment + unaddressed_findings
+    # ── Final summary call ────────────────────────────────────────────────────
+    if progress_callback:
+        progress_callback("📊 Generating overall assessment and executive summary...")
+
     summary, summary_usage = _generate_summary(client, condensed, all_gap_analysis)
     total_usage = _sum_usage(total_usage, summary_usage)
 
@@ -307,6 +395,7 @@ def compare_findings_to_inventory(
         "overall_assessment": summary.get("overall_assessment", {}),
         "unaddressed_findings": summary.get("unaddressed_findings", []),
         "_token_usage": total_usage,
+        "_rag_metadata": rag_metadata,
     }
 
 
@@ -367,3 +456,23 @@ def get_unaddressed_findings_rows(comparison: dict) -> list[dict]:
 def get_overall_assessment(comparison: dict) -> dict:
     """Return the overall_assessment section of the comparison result."""
     return comparison.get("overall_assessment", {})
+
+
+def get_comparison_summary(comparison: dict) -> dict:
+    """Return a concise human-readable summary of the comparison result."""
+    assessment = get_overall_assessment(comparison)
+    rag_meta = comparison.get("_rag_metadata", {})
+    cl = assessment.get("controls_layer_summary", {})
+    return {
+        "Overall Risk Rating": assessment.get("overall_risk_rating", "N/A"),
+        "Total Assessed": assessment.get("total_assessed", 0),
+        "Controls: Covered": cl.get("covered", 0),
+        "Controls: Partially Covered": cl.get("partially_covered", 0),
+        "Controls: Potential Gap": cl.get("potential_gap", 0),
+        "Controls: Insufficient Evidence": cl.get("insufficient_evidence", 0),
+        "Unaddressed Findings": len(comparison.get("unaddressed_findings", [])),
+        "Analysis Mode": rag_meta.get("mode", "unknown"),
+        "Controls Assessed": rag_meta.get("controls_assessed", 0),
+        "Total Inventory": rag_meta.get("total_inventory", 0),
+        "Token Reduction": f"{rag_meta.get('reduction_pct', 0):.0f}%",
+    }

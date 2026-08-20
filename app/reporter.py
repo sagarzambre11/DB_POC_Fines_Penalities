@@ -4,10 +4,15 @@ app/reporter.py
 Step 5: Controls gap analysis report generation and Excel export.
 
 Produces:
-  - Controls Gap DataFrame  (single layer — shift-left signal)
+  - Controls Gap DataFrame   (shift-left signal per control)
   - Stakeholder Signals DataFrame
   - Unaddressed Findings DataFrame
+  - Summary DataFrame
   - Downloadable 6-sheet Excel workbook
+
+Coverage labels used throughout this file must match the labels the LLM is
+instructed to output in comparator.py BATCH_SYSTEM_PROMPT:
+  "Covered" | "Partially Covered" | "Potential Gap" | "Insufficient Evidence"
 """
 
 import io
@@ -26,7 +31,7 @@ from app.comparator import (
 )
 
 # ---------------------------------------------------------------------------
-# Colour maps
+# Colour maps — aligned to comparator BATCH_SYSTEM_PROMPT coverage labels
 # ---------------------------------------------------------------------------
 
 CONTROLS_FILL = {
@@ -71,7 +76,7 @@ RISK_FILL = {
 # ---------------------------------------------------------------------------
 
 def build_controls_gap_dataframe(comparison: dict) -> pd.DataFrame:
-    """Build Controls Gap DataFrame (single layer)."""
+    """Build Controls Gap DataFrame from gap analysis results."""
     rows = get_controls_gap_rows(comparison)
     cols = [
         "ID", "Name", "Domain", "Controls Owner",
@@ -80,10 +85,6 @@ def build_controls_gap_dataframe(comparison: dict) -> pd.DataFrame:
         "Gap Severity", "Related Themes",
     ]
     return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
-
-
-# Keep legacy alias so any cached imports still resolve
-build_policy_gap_dataframe = build_controls_gap_dataframe
 
 
 def build_stakeholder_signals_dataframe(comparison: dict) -> pd.DataFrame:
@@ -107,6 +108,7 @@ def build_summary_dataframe(comparison: dict) -> pd.DataFrame:
     """Build a summary metrics DataFrame from overall_assessment."""
     a = get_overall_assessment(comparison)
     cl = a.get("controls_layer_summary", {})
+    rag = comparison.get("_rag_metadata", {})
     rows = [
         ("Total Items Assessed", a.get("total_assessed", 0)),
         ("--- CONTROLS ---", ""),
@@ -115,6 +117,11 @@ def build_summary_dataframe(comparison: dict) -> pd.DataFrame:
         ("  Controls: Potential Gap", cl.get("potential_gap", 0)),
         ("  Controls: Insufficient Evidence", cl.get("insufficient_evidence", 0)),
         ("Overall Risk Rating", a.get("overall_risk_rating", "N/A")),
+        ("--- RAG METADATA ---", ""),
+        ("  Analysis Mode", rag.get("mode", "N/A")),
+        ("  Total Inventory", rag.get("total_inventory", "N/A")),
+        ("  Controls Assessed (RAG)", rag.get("controls_assessed", "N/A")),
+        ("  Token Reduction", f"{rag.get('reduction_pct', 0):.0f}%"),
     ]
     return pd.DataFrame(rows, columns=["Metric", "Value"])
 
@@ -133,15 +140,9 @@ def _apply_header_style(ws, row: int, num_cols: int) -> None:
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
-_header_style = _apply_header_style
-
-
 def _apply_border(cell) -> None:
     thin = Side(style="thin")
     cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-
-_border = _apply_border
 
 
 def _auto_fit_columns(ws, min_w: int = 12, max_w: int = 55) -> None:
@@ -151,9 +152,6 @@ def _auto_fit_columns(ws, min_w: int = 12, max_w: int = 55) -> None:
             (len(str(c.value)) for c in col if c.value), default=0
         )
         ws.column_dimensions[col_letter].width = max(min_w, min(max_len + 4, max_w))
-
-
-_auto_width = _auto_fit_columns
 
 
 def _colour_cell(cell, fill_hex: str, font_hex: str = "000000", bold: bool = True) -> None:
@@ -225,8 +223,8 @@ def generate_excel_report(
     Generate a 6-sheet Excel workbook with the full controls gap analysis.
 
     Sheets:
-      1. Summary               — Overall assessment, shift-left headline, risk rating
-      2. Controls Gap Analysis — Controls coverage per inventory item
+      1. Summary               — Overall assessment, RAG metadata, shift-left headline
+      2. Controls Gap Analysis — Controls coverage per assessed inventory item
       3. Stakeholder Signals   — Who needs to act, what, and with what priority
       4. Unaddressed Findings  — Enforcement themes with no matching control
       5. Enforcement Data      — Extracted enforcement intelligence
@@ -247,6 +245,7 @@ def generate_excel_report(
     entity = extracted_enforcement.get("regulated_entity", {})
     action = extracted_enforcement.get("enforcement_action", {})
     regulator = extracted_enforcement.get("regulator", {})
+    rag = comparison.get("_rag_metadata", {})
 
     # ── Sheet 1: Summary ────────────────────────────────────────────────────
     ws_s = wb.create_sheet("Summary")
@@ -277,6 +276,9 @@ def generate_excel_report(
         ("Penalty", f"{action.get('penalty_currency', '')} {action.get('penalty_amount', 'N/A')}"),
         ("Reference", action.get("reference_number", "N/A")),
         ("Domain(s)", ", ".join(extracted_enforcement.get("regulatory_domain", []))),
+        ("Analysis Mode", rag.get("mode", "N/A").replace("_", " ").title()),
+        ("Controls Assessed (RAG)", f"{rag.get('controls_assessed', 'N/A')} of {rag.get('total_inventory', 'N/A')}"),
+        ("Token Reduction", f"{rag.get('reduction_pct', 0):.0f}%"),
     ]
     for i, (lbl, val) in enumerate(meta, start=3):
         ws_s.cell(row=i, column=1, value=lbl).font = Font(bold=True)
@@ -402,6 +404,11 @@ def generate_excel_report(
             "Confidence Score",
             str(extracted_enforcement.get("confidence_score", {}).get("score", "")),
         ),
+        ("--- RAG METADATA ---", ""),
+        ("Analysis Mode", rag.get("mode", "N/A")),
+        ("Total Inventory Controls", str(rag.get("total_inventory", "N/A"))),
+        ("Controls Assessed", str(rag.get("controls_assessed", "N/A"))),
+        ("Token Reduction", f"{rag.get('reduction_pct', 0):.0f}%"),
     ]
     for label, value in enf_rows:
         rn = ws_e.max_row + 1

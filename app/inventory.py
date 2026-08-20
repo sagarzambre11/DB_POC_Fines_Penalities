@@ -1,13 +1,12 @@
 """
 app/inventory.py
 ----------------
-Step 3: GRC Controls Inventory loader.
+Step 3: GRC Controls Inventory loader with display helpers and LLM prompt serialisation.
 
 The GRC inventory represents Controls in the analysis:
-  - CONTROLS: control_objective + control_description + process → full control context
-
-Each control is assessed as a single unit against enforcement findings
-to identify gaps and generate shift-left signals.
+  - Each row = one control (objective + description + process = full control context)
+  - Each control is assessed as a single unit against enforcement findings
+    to identify gaps and generate shift-left signals.
 """
 
 import pandas as pd
@@ -107,138 +106,37 @@ def get_inventory_summary(inventory: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Dual-role representations for LLM prompts
+# LLM prompt serialisation
 # ---------------------------------------------------------------------------
-
-def inventory_to_policy_prompt_text(inventory: list[dict]) -> str:
-    """
-    Serialise the inventory as a CONTROLS CORPUS for LLM prompt injection.
-
-    Kept for backward compatibility — delegates to inventory_to_combined_prompt_text.
-
-    Args:
-        inventory: List of control dicts from load_inventory().
-
-    Returns:
-        Formatted multi-line string representing all controls.
-    """
-    return inventory_to_combined_prompt_text(inventory)
-
-
-def inventory_to_control_prompt_text(inventory: list[dict]) -> str:
-    """
-    Serialise the inventory as an OPERATIONAL CONTROL set for LLM prompt injection.
-
-    Each row is represented at the operational control level:
-      - Control ID = control_id
-      - Control Name = control_name
-      - Control Description = control_description  ← PRIMARY for control mapping
-      - Control Type = control_type
-      - Frequency + Trigger = operational cadence
-      - Owner = control owner
-
-    Args:
-        inventory: List of control dicts from load_inventory().
-
-    Returns:
-        Formatted multi-line string representing all controls.
-    """
-    lines = []
-    for ctrl in inventory:
-        lines.append(
-            f"[CONTROL: {ctrl['control_id']}] {ctrl['control_name']}\n"
-            f"  Description  : {ctrl['control_description']}\n"
-            f"  Type         : {ctrl['control_type']} | "
-            f"Frequency: {ctrl['frequency']} | "
-            f"Trigger: {ctrl['trigger']}\n"
-            f"  Domain       : {ctrl['regulatory_domain']} | "
-            f"Process: {ctrl['process']}\n"
-            f"  Owner        : {ctrl['owner']} | "
-            f"Status: {ctrl['status']}\n"
-        )
-    return "\n".join(lines)
-
 
 def inventory_to_combined_prompt_text(inventory: list[dict]) -> str:
     """
-    Serialise the inventory as CONTROLS for LLM prompt injection.
+    Serialise the inventory as a CONTROLS CORPUS for LLM prompt injection.
 
-    Used for the controls gap analysis where the LLM assesses
-    controls coverage in a single pass.
+    Formats each control with its full context (objective, mechanism, operational
+    details) so the LLM can assess coverage against enforcement findings.
+
+    Used by comparator.py for both RAG-filtered batches and full-scan batches.
 
     Args:
-        inventory: List of control dicts from load_inventory().
+        inventory: List of control dicts from load_inventory() — can be the full
+                   inventory or a RAG-filtered subset.
 
     Returns:
-        Formatted multi-line string showing full control context.
+        Formatted multi-line string representing all controls in the list.
     """
     lines = []
     for ctrl in inventory:
         lines.append(
             f"[ID: {ctrl['control_id']}] {ctrl['control_name']}\n"
-            f"  CONTROL OBJECTIVE        : {ctrl['control_objective']}\n"
-            f"  CONTROL MECHANISM        : {ctrl['control_description']}\n"
-            f"  Type         : {ctrl['control_type']} | "
+            f"  CONTROL OBJECTIVE  : {ctrl['control_objective']}\n"
+            f"  CONTROL MECHANISM  : {ctrl['control_description']}\n"
+            f"  Type               : {ctrl['control_type']} | "
             f"Frequency: {ctrl['frequency']} | "
             f"Trigger: {ctrl['trigger']}\n"
-            f"  Domain       : {ctrl['regulatory_domain']} | "
+            f"  Domain             : {ctrl['regulatory_domain']} | "
             f"Process: {ctrl['process']}\n"
-            f"  Owner        : {ctrl['owner']} | "
+            f"  Owner              : {ctrl['owner']} | "
             f"Status: {ctrl['status']}\n"
         )
     return "\n".join(lines)
-
-
-def get_policy_view(inventory: list[dict]) -> list[dict]:
-    """
-    Return a policy-focused view of the inventory.
-
-    Extracts the policy-level fields from each inventory row.
-
-    Args:
-        inventory: List of control dicts from load_inventory().
-
-    Returns:
-        List of dicts with policy-level fields only.
-    """
-    return [
-        {
-            "policy_id": ctrl["control_id"],
-            "policy_name": ctrl["control_name"],
-            "policy_statement": ctrl["control_objective"],
-            "process_area": ctrl["process"],
-            "regulatory_domain": ctrl["regulatory_domain"],
-            "policy_owner": ctrl["owner"],
-            "status": ctrl["status"],
-        }
-        for ctrl in inventory
-    ]
-
-
-def get_control_view(inventory: list[dict]) -> list[dict]:
-    """
-    Return a control-focused view of the inventory.
-
-    Extracts the operational control fields from each inventory row.
-
-    Args:
-        inventory: List of control dicts from load_inventory().
-
-    Returns:
-        List of dicts with operational control fields only.
-    """
-    return [
-        {
-            "control_id": ctrl["control_id"],
-            "control_name": ctrl["control_name"],
-            "control_description": ctrl["control_description"],
-            "control_type": ctrl["control_type"],
-            "frequency": ctrl["frequency"],
-            "trigger": ctrl["trigger"],
-            "regulatory_domain": ctrl["regulatory_domain"],
-            "process": ctrl["process"],
-            "control_owner": ctrl["owner"],
-            "status": ctrl["status"],
-        }
-        for ctrl in inventory
-    ]
