@@ -1,13 +1,14 @@
 """
 streamlit_app.py
 ----------------
-Regulatory Enforcement Intelligence PoC — v3 (RAG-Enhanced)
+Regulatory Enforcement Intelligence PoC — v4 (Agentic RAG)
 
 AI-powered, regulator-agnostic gap analysis pipeline:
   Step 1 — Upload ANY enforcement document (FCA, DFS, SEC, MAS, etc.)
   Step 2 — Extract structured intelligence via Azure OpenAI
-  Step 3 — Load GRC inventory + Build semantic vector index
-  Step 4 — Run Controls Gap Analysis (RAG-enhanced or Full Scan)
+  Step 3 — Load GRC Inventory (default / Excel upload / controls document upload)
+           + Build semantic vector index
+  Step 4 — Run Controls Gap Analysis (Agentic RAG / Standard RAG / Full Scan)
   Step 5 — View shift-left signals, stakeholder alerts, and download report
 """
 
@@ -17,8 +18,15 @@ import streamlit as st
 from config import AzureOpenAIConfig, EmbeddingConfig, AppConfig
 from app.parser import parse_document, get_document_preview
 from app.extractor import extract_enforcement_data, get_extraction_summary
-from app.inventory import load_inventory, inventory_to_dataframe, get_inventory_summary
+from app.inventory import (
+    load_inventory,
+    load_inventory_from_bytes,
+    extract_controls_from_document,
+    inventory_to_dataframe,
+    get_inventory_summary,
+)
 from app.comparator import compare_findings_to_inventory, get_overall_assessment
+from app.agents.orchestrator import run_agentic_pipeline
 from app.reporter import (
     build_controls_gap_dataframe,
     build_stakeholder_signals_dataframe,
@@ -61,6 +69,8 @@ st.markdown("""
 for _key in [
     "document_text", "extracted_data", "inventory", "comparison",
     "uploaded_filename", "rag_collection", "rag_index_built",
+    "inventory_source",    # "default" | "excel" | "document"
+    "inventory_filename",  # display name of the current inventory source
 ]:
     if _key not in st.session_state:
         st.session_state[_key] = None
@@ -71,7 +81,6 @@ for _key in [
 with st.sidebar:
     st.markdown("## ⚙️ Configuration")
 
-    # LLM status
     missing_llm = AzureOpenAIConfig.validate()
     if missing_llm:
         st.error(
@@ -84,8 +93,6 @@ with st.sidebar:
         st.markdown(f"**LLM:** `{AzureOpenAIConfig.DEPLOYMENT}`")
 
     st.divider()
-
-    # Embedding status
     st.markdown("## 🧠 Embedding Provider")
     missing_emb = EmbeddingConfig.validate()
     if missing_emb:
@@ -97,8 +104,8 @@ with st.sidebar:
     else:
         st.success(f"✅ {EmbeddingConfig.provider_display()}")
     st.caption(
-        f"Set `EMBEDDING_PROVIDER=google` in `.env` to switch to Google embeddings "
-        f"(requires `GOOGLE_API_KEY`). Currently: `{EmbeddingConfig.PROVIDER}`"
+        f"Set `EMBEDDING_PROVIDER=google` in `.env` to switch providers. "
+        f"Currently: `{EmbeddingConfig.PROVIDER}`"
     )
 
     st.divider()
@@ -106,25 +113,23 @@ with st.sidebar:
     st.markdown("""
 1. 📄 Upload Enforcement Document
 2. 🔍 Extract Intelligence (LLM)
-3. 📊 Load GRC Inventory + Build Semantic Index
-4. 🤖 Run Controls Gap Analysis (RAG)
+3. 📊 Load GRC Inventory + Semantic Index
+4. 🤖 Run Controls Gap Analysis
 5. 📥 View Results & Download
 """)
     st.divider()
-    st.markdown("**Version:** 3.0 — RAG-Enhanced")
+    st.markdown("**Version:** 4.0 — Agentic RAG")
     st.markdown(f"**LLM:** `{AzureOpenAIConfig.DEPLOYMENT}`")
     st.markdown(f"**Embeddings:** `{EmbeddingConfig.PROVIDER}`")
-    st.markdown("**Mode:** Shift-Left Compliance Intelligence")
 
-    # Token usage summary
     st.divider()
     st.markdown("## 🔢 Token Usage")
     ext_usage = (st.session_state.get("extracted_data") or {}).get("_token_usage", {})
     cmp_usage = (st.session_state.get("comparison") or {}).get("_token_usage", {})
-    rag_meta = (st.session_state.get("comparison") or {}).get("_rag_metadata", {})
+    rag_meta  = (st.session_state.get("comparison") or {}).get("_rag_metadata", {})
 
     if not ext_usage and not cmp_usage:
-        st.caption("Token counts will appear here after running the pipeline.")
+        st.caption("Token counts appear here after running the pipeline.")
     else:
         if ext_usage:
             st.markdown("**Step 2 — Extraction**")
@@ -141,10 +146,9 @@ with st.sidebar:
                 f"Total: `{cmp_usage.get('total_tokens', 0):,}`"
             )
         if rag_meta:
-            mode = rag_meta.get("mode", "unknown")
-            reduction = rag_meta.get("reduction_pct", 0)
-            assessed = rag_meta.get("controls_assessed", "?")
+            assessed  = rag_meta.get("controls_assessed", "?")
             total_inv = rag_meta.get("total_inventory", "?")
+            reduction = rag_meta.get("reduction_pct", 0)
             st.markdown(
                 f"**RAG:** `{assessed}` / `{total_inv}` controls "
                 f"· `{reduction:.0f}%` reduction"
@@ -164,18 +168,18 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<div class="sub-title">RAG-enhanced controls gap analysis — enforcement documents '
-    'mapped to your GRC inventory via semantic search. Works for any regulator '
-    '(FCA, DFS, SEC, MAS, FINRA...) and any compliance domain.</div>',
+    '<div class="sub-title">Agentic RAG-powered controls gap analysis — '
+    'enforcement documents mapped to your GRC inventory via self-correcting agents. '
+    'Works for any regulator (FCA, DFS, SEC, MAS, FINRA...) and any compliance domain.</div>',
     unsafe_allow_html=True,
 )
 st.divider()
+
 
 # ---------------------------------------------------------------------------
 # Helper: token badge
 # ---------------------------------------------------------------------------
 def _render_token_badge(usage: dict, label: str = "") -> None:
-    """Render a compact token usage caption."""
     if not usage:
         return
     prefix = f"**{label}** — " if label else ""
@@ -186,8 +190,16 @@ def _render_token_badge(usage: dict, label: str = "") -> None:
         f"Total: **{usage.get('total_tokens', 0):,}** tokens"
     )
 
+
+def _reset_index_and_comparison() -> None:
+    """Reset downstream state when the inventory changes."""
+    st.session_state.rag_collection = None
+    st.session_state.rag_index_built = False
+    st.session_state.comparison = None
+
+
 # ---------------------------------------------------------------------------
-# STEP 1 — Upload Document
+# STEP 1 — Upload Enforcement Document
 # ---------------------------------------------------------------------------
 st.markdown(
     '<div class="step-header">Step 1 — Upload Enforcement Document (any regulator)</div>',
@@ -203,11 +215,9 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     if uploaded_file.name != st.session_state.uploaded_filename:
-        # New file uploaded — reset downstream state
         st.session_state.extracted_data = None
         st.session_state.comparison = None
         st.session_state.uploaded_filename = uploaded_file.name
-
         with st.spinner(f"Parsing **{uploaded_file.name}**..."):
             try:
                 file_bytes = uploaded_file.read()
@@ -261,32 +271,26 @@ else:
             st.session_state.extracted_data.get("_token_usage", {}),
             label="Step 2 token usage",
         )
-        ed = st.session_state.extracted_data
-        reg = ed.get("regulator", {})
-        entity = ed.get("regulated_entity", {})
-        action = ed.get("enforcement_action", {})
-        domains = ", ".join(ed.get("regulatory_domain", []))
-        penalty = action.get("penalty_amount")
+        ed       = st.session_state.extracted_data
+        reg      = ed.get("regulator", {})
+        entity   = ed.get("regulated_entity", {})
+        action   = ed.get("enforcement_action", {})
+        domains  = ", ".join(ed.get("regulatory_domain", []))
+        penalty  = action.get("penalty_amount")
         currency = action.get("penalty_currency", "")
 
         st.markdown("##### 🌍 Auto-Detected Enforcement Intelligence")
         r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-        r1c1.metric("Regulator", reg.get("abbreviation") or reg.get("name", "N/A"))
+        r1c1.metric("Regulator",   reg.get("abbreviation") or reg.get("name", "N/A"))
         r1c2.metric("Jurisdiction", ed.get("jurisdiction", "N/A"))
-        r1c3.metric("Entity", entity.get("name", "N/A")[:30])
-        r1c4.metric("Penalty", f"{currency} {penalty:,}" if penalty else "N/A")
+        r1c3.metric("Entity",       entity.get("name", "N/A")[:30])
+        r1c4.metric("Penalty",      f"{currency} {penalty:,}" if penalty else "N/A")
 
         r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-        r2c1.metric("Domain(s)", domains[:40] if domains else "N/A")
-        r2c2.metric("Notice Date", action.get("notice_date", "N/A"))
-        r2c3.metric(
-            "Misconduct Themes",
-            len(ed.get("misconduct_control_failure_themes", [])),
-        )
-        r2c4.metric(
-            "Confidence",
-            get_extraction_summary(ed).get("Confidence Score", "N/A"),
-        )
+        r2c1.metric("Domain(s)",         domains[:40] if domains else "N/A")
+        r2c2.metric("Notice Date",        action.get("notice_date", "N/A"))
+        r2c3.metric("Misconduct Themes",  len(ed.get("misconduct_control_failure_themes", [])))
+        r2c4.metric("Confidence",         get_extraction_summary(ed).get("Confidence Score", "N/A"))
 
         with st.expander("🔎 Full Extracted JSON", expanded=False):
             st.json(ed)
@@ -301,17 +305,120 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Auto-load inventory
-if st.session_state.inventory is None:
-    try:
-        st.session_state.inventory = load_inventory()
-        st.session_state.rag_collection = None
-        st.session_state.rag_index_built = False
-    except Exception as e:
-        st.error(f"Failed to load GRC inventory: {e}")
+# ── Inventory source selector ─────────────────────────────────────────────
+inv_source = st.radio(
+    "**GRC Inventory Source:**",
+    options=[
+        "📁 Default (docs/grc_inventory.xlsx)",
+        "📊 Upload Excel Inventory (.xlsx)",
+        "📄 Upload Controls Document (DOCX/PDF)",
+    ],
+    index=0,
+    horizontal=True,
+    help=(
+        "Choose how to load the GRC control inventory:\n"
+        "• Default — uses the bundled grc_inventory.xlsx\n"
+        "• Excel — upload your own .xlsx inventory file\n"
+        "• Controls Document — upload a DOCX/PDF and the LLM extracts controls from it"
+    ),
+)
 
+if inv_source == "📁 Default (docs/grc_inventory.xlsx)":
+    # Auto-load default from disk; reload if switching back from another source
+    if st.session_state.inventory is None or st.session_state.inventory_source != "default":
+        try:
+            st.session_state.inventory = load_inventory()
+            st.session_state.inventory_source = "default"
+            st.session_state.inventory_filename = AppConfig.GRC_INVENTORY_PATH
+            _reset_index_and_comparison()
+        except Exception as e:
+            st.error(f"Failed to load default GRC inventory: {e}")
+
+elif inv_source == "📊 Upload Excel Inventory (.xlsx)":
+    uploaded_inv = st.file_uploader(
+        "Upload GRC Inventory (.xlsx)",
+        type=["xlsx"],
+        help=(
+            f"Required sheet: '{AppConfig.GRC_SHEET_NAME}' (first sheet used if not found). "
+            "Required columns: control_id, control_name, control_objective, "
+            "control_description, control_type, frequency, trigger, process, "
+            "regulatory_domain, owner, status."
+        ),
+        key="inv_excel_uploader",
+    )
+    if uploaded_inv is not None:
+        if uploaded_inv.name != st.session_state.inventory_filename:
+            with st.spinner(f"Loading inventory from **{uploaded_inv.name}**..."):
+                try:
+                    inv_bytes = uploaded_inv.read()
+                    st.session_state.inventory = load_inventory_from_bytes(inv_bytes)
+                    st.session_state.inventory_source = "excel"
+                    st.session_state.inventory_filename = uploaded_inv.name
+                    _reset_index_and_comparison()
+                    st.success(
+                        f"✅ Loaded **{len(st.session_state.inventory)}** controls "
+                        f"from **{uploaded_inv.name}**. Rebuild the semantic index below."
+                    )
+                except (ValueError, RuntimeError) as e:
+                    st.error(f"❌ Failed to load inventory: {e}")
+                    st.session_state.inventory = None
+                    st.session_state.inventory_filename = None
+
+else:  # "📄 Upload Controls Document (DOCX/PDF)"
+    st.markdown(
+        "Upload a controls policy document (Word or PDF). "
+        "The LLM will read it and extract all GRC controls into the standard inventory format."
+    )
+    uploaded_ctrl_doc = st.file_uploader(
+        "Upload Controls Document (.docx or .pdf)",
+        type=["docx", "pdf"],
+        help=(
+            "Examples: Controls Framework PDF, Policy Manual DOCX, Procedure Document. "
+            "The LLM extracts control_id, name, objective, description, type, frequency, "
+            "trigger, process, domain, owner and status from the document text."
+        ),
+        key="ctrl_doc_uploader",
+    )
+    if uploaded_ctrl_doc is not None:
+        if uploaded_ctrl_doc.name != st.session_state.inventory_filename:
+            _ctrl_status = st.empty()
+
+            def _ctrl_progress(msg: str) -> None:
+                _ctrl_status.info(msg)
+
+            with st.spinner(f"Parsing and extracting controls from **{uploaded_ctrl_doc.name}**..."):
+                try:
+                    ctrl_bytes = uploaded_ctrl_doc.read()
+                    ctrl_text  = parse_document(ctrl_bytes, uploaded_ctrl_doc.name)
+                    _ctrl_status.info(
+                        f"📄 Document parsed — {len(ctrl_text):,} characters. "
+                        "Sending to LLM for controls extraction..."
+                    )
+                    st.session_state.inventory = extract_controls_from_document(
+                        ctrl_text, progress_callback=_ctrl_progress
+                    )
+                    st.session_state.inventory_source   = "document"
+                    st.session_state.inventory_filename = uploaded_ctrl_doc.name
+                    _reset_index_and_comparison()
+                    _ctrl_status.success(
+                        f"✅ Extracted **{len(st.session_state.inventory)}** controls "
+                        f"from **{uploaded_ctrl_doc.name}**. "
+                        "Review the inventory below, then build the semantic index."
+                    )
+                except (ValueError, RuntimeError) as e:
+                    _ctrl_status.error(f"❌ Controls extraction failed: {e}")
+                    st.session_state.inventory = None
+                    st.session_state.inventory_filename = None
+
+# ── Inventory summary & preview ───────────────────────────────────────────
 if st.session_state.inventory:
     inv_summary = get_inventory_summary(st.session_state.inventory)
+
+    # Source badge
+    src_icons = {"default": "📁", "excel": "📊", "document": "📄"}
+    src_icon  = src_icons.get(st.session_state.inventory_source or "default", "📁")
+    st.caption(f"{src_icon} Inventory: **{st.session_state.inventory_filename}**")
+
     ca, cb, cc = st.columns(3)
     ca.metric("Total Controls", inv_summary["Total Controls"])
     cb.metric("Domain(s)", ", ".join(inv_summary["Regulatory Domains"]))
@@ -330,11 +437,10 @@ if st.session_state.inventory:
     st.markdown("##### 🧠 Semantic Vector Index")
     st.markdown(
         "The semantic index embeds all GRC controls so the RAG pipeline can retrieve "
-        "**only the most relevant controls** for each enforcement document — "
-        "instead of sending all controls to the LLM."
+        "**only the most relevant controls** for each enforcement document."
     )
 
-    # Check for a cached index on disk
+    # Check for a cached index
     if not st.session_state.rag_index_built:
         try:
             from app.vector_store import get_index_info
@@ -343,30 +449,29 @@ if st.session_state.inventory:
                 st.session_state.rag_index_built = True
                 st.success(
                     f"✅ Semantic index loaded from cache — "
-                    f"**{info['control_count']}** controls indexed · "
+                    f"**{info['control_count']}** controls · "
                     f"Provider: `{info['embedding_model']}`"
                 )
         except Exception:
             pass
 
-    # Index controls button + status
     idx_col1, idx_col2 = st.columns([1, 3])
     with idx_col1:
         build_label = "🔄 Rebuild Index" if st.session_state.rag_index_built else "🧠 Build Semantic Index"
-        build_btn = st.button(build_label, use_container_width=True)
+        build_btn   = st.button(build_label, use_container_width=True)
 
     with idx_col2:
         if st.session_state.rag_index_built:
             st.markdown(
                 '<div class="rag-box">✅ <strong>Semantic index ready</strong> — '
-                'RAG mode will use semantic search to select the most relevant controls.</div>',
+                'RAG mode will select the most relevant controls via semantic search.</div>',
                 unsafe_allow_html=True,
             )
         else:
             st.info(
                 "Click **Build Semantic Index** to embed GRC controls. "
-                "This is required for RAG mode. The index is cached to disk and "
-                "only rebuilds if the inventory changes."
+                "Required for RAG and Agentic modes. Cached to disk; only rebuilds when "
+                "the inventory changes."
             )
 
     if build_btn and st.session_state.inventory:
@@ -399,7 +504,7 @@ st.divider()
 # STEP 4 — Controls Gap Analysis
 # ---------------------------------------------------------------------------
 st.markdown(
-    '<div class="step-header">Step 4 — Controls Gap Analysis (RAG-Enhanced)</div>',
+    '<div class="step-header">Step 4 — Controls Gap Analysis (Agentic RAG / Standard RAG / Full Scan)</div>',
     unsafe_allow_html=True,
 )
 
@@ -411,51 +516,47 @@ step4_ready = (
 if not step4_ready:
     st.info("⬆️ Complete Steps 1–3 before running the gap analysis.")
 else:
-    # RAG mode toggle
-    use_rag = st.toggle(
-        "🧠 Use Semantic Search (RAG mode)",
-        value=True,
+    analysis_mode = st.radio(
+        "**Analysis Mode:**",
+        options=["🤖 Agentic RAG", "🧠 Standard RAG", "🔍 Full Scan"],
+        index=0,
+        horizontal=True,
         help=(
-            "RAG mode: embed enforcement themes → retrieve only relevant controls → "
-            "LLM assesses those controls only. "
-            "Full Scan: all controls sent to LLM (Phase 1 behaviour)."
+            "Agentic RAG: self-validating extraction + HyDE retrieval + reflection loop. "
+            "Standard RAG: semantic search + direct LLM analysis. "
+            "Full Scan: all controls sent to LLM."
         ),
     )
 
-    if use_rag:
+    if analysis_mode == "🤖 Agentic RAG":
+        st.markdown(
+            '<div class="rag-box">🤖 <strong>Agentic RAG mode</strong> — '
+            '3 self-correcting agents: Extraction → Retrieval (HyDE) → Gap Analysis (reflection + deep dives).</div>',
+            unsafe_allow_html=True,
+        )
+    elif analysis_mode == "🧠 Standard RAG":
         if st.session_state.rag_index_built:
             st.markdown(
-                '<div class="rag-box">🧠 <strong>RAG mode active</strong> — '
-                'Semantic search will retrieve the most relevant controls before LLM analysis. '
-                'Expect significant token reduction vs. full scan.</div>',
+                '<div class="rag-box">🧠 <strong>Standard RAG mode</strong> — '
+                'Semantic search retrieves the most relevant controls before LLM analysis.</div>',
                 unsafe_allow_html=True,
             )
         else:
-            st.warning(
-                "⚠️ Semantic index not built yet. Build it in Step 3 for optimal results. "
-                "The analysis will attempt to build the index automatically, "
-                "or fall back to full scan if that fails."
-            )
+            st.warning("⚠️ Semantic index not built. Build it in Step 3 for best results.")
     else:
-        st.info(
-            "🔍 **Full Scan mode** — all controls will be assessed by the LLM "
-            "(Phase 1 behaviour). Enable RAG mode for better efficiency and precision."
-        )
+        st.info("🔍 **Full Scan mode** — all controls sent to the LLM.")
 
     st.markdown(
-        "**Controls Coverage** *(shift-left signal)* — "
-        "Assesses whether your firm's Controls (objective, mechanism, operational detail) "
+        "**Controls Coverage** *(shift-left signal)* — Assesses whether your firm's Controls "
         "would have mandated the governance absent in the enforcement case."
     )
 
     col1, _ = st.columns([1, 3])
     with col1:
-        analyse_btn = st.button(
-            "🤖 Run Gap Analysis", type="primary", use_container_width=True
-        )
+        analyse_btn = st.button("🤖 Run Gap Analysis", type="primary", use_container_width=True)
 
     if analyse_btn:
-        _status_text = st.empty()
+        _status_text  = st.empty()
         _progress_bar = st.progress(0)
 
         def _on_progress(message: str) -> None:
@@ -463,30 +564,54 @@ else:
 
         try:
             t0 = time.time()
-            st.session_state.comparison = compare_findings_to_inventory(
-                extracted_enforcement=st.session_state.extracted_data,
-                inventory=st.session_state.inventory,
-                progress_callback=_on_progress,
-                use_rag=use_rag,
-                rag_collection=st.session_state.rag_collection,
-            )
-            _progress_bar.progress(1.0)
-            elapsed = time.time() - t0
 
-            # Show RAG reduction summary
-            rag_m = st.session_state.comparison.get("_rag_metadata", {})
-            mode_label = rag_m.get("mode", "unknown").replace("_", " ").title()
-            assessed = rag_m.get("controls_assessed", "?")
+            if analysis_mode == "🤖 Agentic RAG":
+                st.session_state.comparison = run_agentic_pipeline(
+                    document_text=st.session_state.document_text,
+                    inventory=st.session_state.inventory,
+                    rag_collection=st.session_state.rag_collection,
+                    progress_callback=_on_progress,
+                )
+            else:
+                use_rag = analysis_mode == "🧠 Standard RAG"
+                st.session_state.comparison = compare_findings_to_inventory(
+                    extracted_enforcement=st.session_state.extracted_data,
+                    inventory=st.session_state.inventory,
+                    progress_callback=_on_progress,
+                    use_rag=use_rag,
+                    rag_collection=st.session_state.rag_collection,
+                )
+
+            _progress_bar.progress(1.0)
+            elapsed   = time.time() - t0
+            rag_m     = st.session_state.comparison.get("_rag_metadata", {})
+            assessed  = rag_m.get("controls_assessed", "?")
             total_inv = rag_m.get("total_inventory", "?")
             reduction = rag_m.get("reduction_pct", 0)
-
             _status_text.empty()
-            st.success(
-                f"✅ Gap analysis complete in **{elapsed:.1f}s** — "
-                f"Mode: **{mode_label}** · "
-                f"Controls assessed: **{assessed}** of **{total_inv}** "
-                f"({reduction:.0f}% token reduction)"
-            )
+
+            if analysis_mode == "🤖 Agentic RAG":
+                agent_meta   = st.session_state.comparison.get("_agent_metadata", {})
+                gap_meta     = agent_meta.get("gap_analysis_agent", {})
+                ret_meta     = agent_meta.get("retrieval_agent", {})
+                hyde_count   = ret_meta.get("query_expansion", {}).get("hyde_queries_generated", 0)
+                deep_dives   = gap_meta.get("deep_dives_performed", 0)
+                contradicts  = gap_meta.get("contradictions_detected_and_resolved", 0)
+                st.success(
+                    f"✅ Agentic analysis complete in **{elapsed:.1f}s** — "
+                    f"Controls: **{assessed}** of **{total_inv}** · "
+                    f"HyDE: **{hyde_count}** · Deep dives: **{deep_dives}** · "
+                    f"Contradictions resolved: **{contradicts}**"
+                )
+            else:
+                mode_label = rag_m.get("mode", "unknown").replace("_", " ").title()
+                st.success(
+                    f"✅ Gap analysis complete in **{elapsed:.1f}s** — "
+                    f"Mode: **{mode_label}** · "
+                    f"Controls assessed: **{assessed}** of **{total_inv}** "
+                    f"({reduction:.0f}% token reduction)"
+                )
+
             _render_token_badge(
                 st.session_state.comparison.get("_token_usage", {}),
                 label="Step 4 token usage",
@@ -510,9 +635,8 @@ if st.session_state.comparison is None:
 else:
     comparison = st.session_state.comparison
     assessment = get_overall_assessment(comparison)
-    rag_m = comparison.get("_rag_metadata", {})
+    rag_m      = comparison.get("_rag_metadata", {})
 
-    # Shift-Left Headline
     headline = assessment.get("shift_left_headline", "")
     if headline:
         st.markdown(
@@ -520,31 +644,75 @@ else:
             unsafe_allow_html=True,
         )
 
-    # RAG metadata banner
-    if rag_m.get("mode") == "rag":
+    mode = rag_m.get("mode", "")
+
+    # Analysis mode banner
+    if mode == "agentic_rag":
+        agent_meta  = comparison.get("_agent_metadata", {})
+        gap_meta    = agent_meta.get("gap_analysis_agent", {})
+        ret_meta    = agent_meta.get("retrieval_agent", {})
+        hyde_count  = ret_meta.get("query_expansion", {}).get("hyde_queries_generated", 0)
+        deep_dives  = gap_meta.get("deep_dives_performed", 0)
+        contradicts = gap_meta.get("contradictions_detected_and_resolved", 0)
+        flags       = gap_meta.get("reflection_flags_raised", 0)
         st.markdown(
-            f'<div class="rag-box">🧠 <strong>RAG Analysis</strong> — '
-            f'{rag_m.get("controls_assessed", "?")} of {rag_m.get("total_inventory", "?")} '
-            f'controls assessed · {rag_m.get("reduction_pct", 0):.0f}% token reduction · '
+            f'<div class="rag-box">🤖 <strong>Agentic RAG Analysis</strong> — '
+            f'{rag_m.get("controls_assessed","?")} of {rag_m.get("total_inventory","?")} '
+            f'controls · {rag_m.get("reduction_pct",0):.0f}% reduction · '
+            f'HyDE: {hyde_count} · Reflection flags: {flags} · '
+            f'Deep dives: {deep_dives} · Contradictions: {contradicts}</div>',
+            unsafe_allow_html=True,
+        )
+        with st.expander("🔬 Agentic Pipeline Trace", expanded=False):
+            ext_meta = agent_meta.get("extraction_agent", {})
+            st.markdown("**Extraction Agent**")
+            st.json({
+                "iterations": ext_meta.get("iterations", 1),
+                "refinements_applied": ext_meta.get("refinements_applied", []),
+                "initial_confidence": ext_meta.get("initial_confidence"),
+                "final_confidence": ext_meta.get("final_confidence"),
+                "final_theme_count": ext_meta.get("final_theme_count"),
+            })
+            st.markdown("**Retrieval Agent**")
+            st.json({
+                "total_queries_run": ret_meta.get("query_expansion", {}).get("total_queries_run"),
+                "hyde_queries_generated": hyde_count,
+                "controls_filtered_out": ret_meta.get("quality_gate", {}).get("controls_filtered_out", 0),
+                "domain_fallback": ret_meta.get("quality_gate", {}).get("domain_fallback_triggered"),
+                "final_controls_selected": ret_meta.get("final_controls_count"),
+            })
+            st.markdown("**Gap Analysis Agent**")
+            st.json({
+                "quick_screen_count": gap_meta.get("quick_screen_count"),
+                "reflection_flags_raised": flags,
+                "deep_dives_performed": deep_dives,
+                "deep_dive_control_ids": gap_meta.get("deep_dive_control_ids", []),
+                "contradictions_resolved": contradicts,
+            })
+    elif mode == "rag":
+        st.markdown(
+            f'<div class="rag-box">🧠 <strong>Standard RAG Analysis</strong> — '
+            f'{rag_m.get("controls_assessed","?")} of {rag_m.get("total_inventory","?")} '
+            f'controls · {rag_m.get("reduction_pct",0):.0f}% reduction · '
             f'Semantic retrieval active</div>',
             unsafe_allow_html=True,
         )
-    elif rag_m.get("mode") == "fallback_full_scan":
+    elif mode == "fallback_full_scan":
         st.warning(
-            f"⚠️ RAG fallback: {rag_m.get('fallback_reason', 'unknown error')}. "
+            f"⚠️ RAG fallback: {rag_m.get('fallback_reason','unknown error')}. "
             "Full inventory scan was used."
         )
 
     # Overall Metrics
     st.markdown("### 📊 Overall Assessment")
-    risk = assessment.get("overall_risk_rating", "N/A")
+    risk      = assessment.get("overall_risk_rating", "N/A")
     risk_icon = {"Low": "🟢", "Medium": "🟡", "High": "🟠", "Critical": "🔴"}.get(risk, "⚪")
-    cl_s = assessment.get("controls_layer_summary", {})
+    cl_s      = assessment.get("controls_layer_summary", {})
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Assessed", assessment.get("total_assessed", 0))
-    c2.metric("Controls Gaps 🔴", cl_s.get("potential_gap", 0))
-    c3.metric("Partially Covered 🟡", cl_s.get("partially_covered", 0))
+    c1.metric("Total Assessed",        assessment.get("total_assessed", 0))
+    c2.metric("Controls Gaps 🔴",      cl_s.get("potential_gap", 0))
+    c3.metric("Partially Covered 🟡",  cl_s.get("partially_covered", 0))
     c4.metric(f"{risk_icon} Risk Rating", risk)
 
     exec_summary = assessment.get("executive_summary", "")
@@ -581,7 +749,6 @@ else:
             filtered.style.map(_style_controls, subset=["Controls Coverage"]),
             use_container_width=True, hide_index=True, height=400,
         )
-
         gap_items = filtered[filtered["Controls Coverage"] == "Potential Gap"]
         if not gap_items.empty:
             st.markdown("##### ⚡ Shift-Left Signals for Controls Gaps")
@@ -639,9 +806,7 @@ else:
         if unaddressed_df.empty:
             st.success("All enforcement themes are addressed by at least one control.")
         else:
-            st.warning(
-                f"**{len(unaddressed_df)} enforcement theme(s)** have no matching control."
-            )
+            st.warning(f"**{len(unaddressed_df)} enforcement theme(s)** have no matching control.")
             st.dataframe(unaddressed_df, use_container_width=True, hide_index=True)
 
     # Download Report
@@ -662,7 +827,7 @@ else:
             type="primary",
         )
         st.caption(
-            "Report contains 6 sheets: Summary (with RAG metadata), Controls Gap Analysis, "
+            "Report contains 6 sheets: Summary, Controls Gap Analysis, "
             "Stakeholder Signals, Unaddressed Findings, Enforcement Data, GRC Inventory."
         )
     except Exception as e:
@@ -674,7 +839,7 @@ else:
 st.divider()
 st.markdown(
     f"<div style='text-align:center;color:#aaa;font-size:.8rem;'>"
-    f"Regulatory Enforcement Intelligence PoC v3 &nbsp;·&nbsp; "
+    f"Regulatory Enforcement Intelligence PoC v4 &nbsp;·&nbsp; "
     f"LLM: {AzureOpenAIConfig.DEPLOYMENT} &nbsp;·&nbsp; "
     f"Embeddings: {EmbeddingConfig.PROVIDER} &nbsp;·&nbsp; "
     f"FCA | DFS | SEC | MAS | FINRA &nbsp;·&nbsp; "
