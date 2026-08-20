@@ -34,3 +34,5 @@ Thumbs.db
 
 # graphify-axet
 .graphify/
+.chromadb/  
+0.3.0  
