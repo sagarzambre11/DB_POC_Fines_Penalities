@@ -10,9 +10,20 @@ Design principle: fully regulator-agnostic and domain-agnostic.
 """
 
 import json
+import logging
+import os
 import time
 from openai import AzureOpenAI, OpenAI
 from config import AzureOpenAIConfig, AppConfig
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# LLM client timeout / retry settings (tunable via .env)
+# ---------------------------------------------------------------------------
+_LLM_TIMEOUT_CONNECT: float = float(os.getenv("LLM_TIMEOUT_CONNECT", "15"))
+_LLM_TIMEOUT_READ:    float = float(os.getenv("LLM_TIMEOUT_READ",    "300"))
+_LLM_TIMEOUT_WRITE:   float = float(os.getenv("LLM_TIMEOUT_WRITE",   "60"))
 
 # ---------------------------------------------------------------------------
 # Shared LLM utilities
@@ -20,16 +31,31 @@ from config import AzureOpenAIConfig, AppConfig
 
 def _build_client() -> "OpenAI | AzureOpenAI":
     """Return the correct OpenAI client based on the configured endpoint."""
+    import httpx
+
     _endpoint = AzureOpenAIConfig.ENDPOINT.rstrip("/")
+
+    # Explicit timeout — LLM reasoning calls can take 60-120 s on slow networks
+    timeout = httpx.Timeout(
+        connect=_LLM_TIMEOUT_CONNECT,
+        read=_LLM_TIMEOUT_READ,
+        write=_LLM_TIMEOUT_WRITE,
+        pool=5.0,
+    )
+
     if "services.ai.azure.com" in _endpoint:
         return OpenAI(
             base_url=f"{_endpoint}/openai/v1/",
             api_key=AzureOpenAIConfig.API_KEY,
+            timeout=timeout,
+            max_retries=0,  # we handle retries ourselves
         )
     return AzureOpenAI(
         azure_endpoint=AzureOpenAIConfig.ENDPOINT,
         api_key=AzureOpenAIConfig.API_KEY,
         api_version=AzureOpenAIConfig.API_VERSION,
+        timeout=timeout,
+        max_retries=0,  # we handle retries ourselves
     )
 
 
@@ -56,6 +82,9 @@ def _call_llm_with_retry(client, max_retries: int = 2, **kwargs) -> tuple[str, d
 
     Raises RuntimeError if all retries are exhausted or content is empty.
     """
+    # Backoff schedule (seconds): 5 s, 15 s, 30 s — suitable for LLM calls
+    _BACKOFF = [5, 15, 30]
+
     last_exc = None
     for attempt in range(max_retries + 1):
         try:
@@ -72,11 +101,22 @@ def _call_llm_with_retry(client, max_retries: int = 2, **kwargs) -> tuple[str, d
                 }
             if content:
                 return content, usage
-            # Empty content — retry
+            # Empty content — treat as retriable
+            last_exc = RuntimeError("LLM returned empty content")
         except Exception as exc:
             last_exc = exc
+            logger.warning(
+                "LLM call attempt %d/%d failed: %s",
+                attempt + 1,
+                max_retries + 1,
+                exc,
+            )
+
         if attempt < max_retries:
-            time.sleep(2 ** attempt)  # 1 s, 2 s
+            wait = _BACKOFF[min(attempt, len(_BACKOFF) - 1)]
+            logger.info("Retrying LLM call in %d s...", wait)
+            time.sleep(wait)
+
     raise RuntimeError(
         f"LLM returned empty/invalid response after {max_retries + 1} attempts."
         + (f" Last error: {last_exc}" if last_exc else "")
