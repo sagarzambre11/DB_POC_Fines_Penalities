@@ -31,10 +31,10 @@ _SENTINEL_DOWNLOAD = "__SHOW_DOWNLOAD__"
 _WELCOME = (
     "👋 Hello! I'm your **Regulatory Enforcement Intelligence** assistant.\n\n"
     "I'm powered by **three self-correcting agents** via LangGraph:\n"
-    "- 📄 **Agent 1 — Extract**: Parses enforcement documents and extracts "
+    "- 📄 **Intelligence Extractor**: Parses enforcement documents and extracts "
     "structured intelligence (regulator, penalty, themes, root causes)\n"
-    "- 🔍 **Agent 2 — Retrieve**: HyDE-augmented semantic search over your GRC controls\n"
-    "- 📊 **Agent 3 — Gap Analysis**: Quick-screens controls with deep-dives and "
+    "- 🔍 **Semantic Retrieval Agent**: HyDE-augmented semantic search over your GRC controls\n"
+    "- 📊 **Compliance Gap Analyser**: Quick-screens controls with deep-dives and "
     "contradiction resolution\n\n"
     "**To get started:**\n"
     "1. 📄 Upload a **PDF** enforcement document in the sidebar\n"
@@ -267,7 +267,8 @@ def _run_and_respond(progress_ph) -> None:
     """
     with st.spinner(
         "🤖 Running LangGraph pipeline — "
-        "Agent 1 → Agent 2 → Agent 3 (60–120 seconds)..."
+        "Intelligence Extractor → Semantic Retrieval Agent → Compliance Gap Analyser "
+        "(60–120 seconds)..."
     ):
         try:
             run_pipeline(progress_ph)

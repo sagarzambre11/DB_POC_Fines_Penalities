@@ -206,7 +206,7 @@ def build_gap_response() -> str:
     agent_lines = ["**Agent Pipeline Intelligence:**"]
     if ext_a:
         agent_lines.append(
-            f"- 📄 Agent 1 (Extract): {ext_a.get('final_theme_count', '?')} themes extracted, "
+            f"- 📄 **Intelligence Extractor**: {ext_a.get('final_theme_count', '?')} themes extracted, "
             f"confidence {ext_a.get('final_confidence', 0):.2f}, "
             f"{ext_a.get('iterations', 1)} iteration(s)"
         )
@@ -214,14 +214,14 @@ def build_gap_response() -> str:
         qe = ret_a.get("query_expansion", {})
         qg = ret_a.get("quality_gate", {})
         agent_lines.append(
-            f"- 🔍 Agent 2 (Retrieve): {qe.get('hyde_queries_generated', 0)} HyDE queries, "
+            f"- 🔍 **Semantic Retrieval Agent**: {qe.get('hyde_queries_generated', 0)} HyDE queries, "
             f"{qe.get('total_queries_run', 0)} total queries, "
             f"{qg.get('controls_filtered_out', 0)} filtered out, "
             f"{ret_a.get('final_controls_count', '?')} controls selected"
         )
     if gap_a:
         agent_lines.append(
-            f"- 📊 Agent 3 (Gap): {gap_a.get('quick_screen_count', 0)} quick-screened, "
+            f"- 📊 **Compliance Gap Analyser**: {gap_a.get('quick_screen_count', 0)} quick-screened, "
             f"{gap_a.get('deep_dives_performed', 0)} deep dives, "
             f"{gap_a.get('contradictions_detected_and_resolved', 0)} contradictions resolved"
         )

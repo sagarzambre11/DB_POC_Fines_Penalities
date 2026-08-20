@@ -104,7 +104,7 @@ def extract_node(state: PipelineState) -> PipelineState:
     """
     cb = state.get("progress_callback")
     if cb:
-        cb("📄 Agent 1 (Extract): Starting extraction agent...")
+        cb("📄 Intelligence Extractor: Starting extraction...")
 
     try:
         missing = AzureOpenAIConfig.validate()
@@ -134,7 +134,7 @@ def extract_node(state: PipelineState) -> PipelineState:
     except Exception as exc:
         logger.error("extract_node failed: %s", exc)
         if cb:
-            cb(f"❌ Agent 1 (Extract) error: {exc}")
+            cb(f"❌ Intelligence Extractor error: {exc}")
         return {**state, "error": str(exc)}
 
 
@@ -157,7 +157,7 @@ def retrieve_node(state: PipelineState) -> PipelineState:
 
     cb = state.get("progress_callback")
     if cb:
-        cb("🔍 Agent 2 (Retrieve): Starting retrieval agent...")
+        cb("🔍 Semantic Retrieval Agent: Starting retrieval...")
 
     try:
         client = _build_client()
@@ -198,7 +198,7 @@ def retrieve_node(state: PipelineState) -> PipelineState:
     except Exception as exc:
         logger.error("retrieve_node failed: %s", exc)
         if cb:
-            cb(f"❌ Agent 2 (Retrieve) error: {exc} — falling back to full inventory")
+            cb(f"❌ Semantic Retrieval Agent error: {exc} — falling back to full inventory")
         # Graceful fallback: use full inventory
         total = len(state["inventory"])
         return {
@@ -234,7 +234,7 @@ def gap_analysis_node(state: PipelineState) -> PipelineState:
 
     cb = state.get("progress_callback")
     if cb:
-        cb("📊 Agent 3 (Gap Analysis): Starting gap analysis agent...")
+        cb("📊 Compliance Gap Analyser: Starting gap analysis...")
 
     try:
         client = _build_client()
@@ -264,7 +264,7 @@ def gap_analysis_node(state: PipelineState) -> PipelineState:
     except Exception as exc:
         logger.error("gap_analysis_node failed: %s", exc)
         if cb:
-            cb(f"❌ Agent 3 (Gap Analysis) error: {exc}")
+            cb(f"❌ Compliance Gap Analyser error: {exc}")
         return {**state, "error": str(exc)}
 
 
@@ -367,7 +367,7 @@ def run_langgraph_pipeline(
     }
 
     if progress_callback:
-        progress_callback("🚀 LangGraph pipeline starting: extract → retrieve → gap_analysis")
+        progress_callback("🚀 LangGraph pipeline starting: Intelligence Extractor → Semantic Retrieval Agent → Compliance Gap Analyser")
 
     # Invoke the compiled graph — runs all three nodes sequentially
     final_state: PipelineState = graph.invoke(initial_state)
