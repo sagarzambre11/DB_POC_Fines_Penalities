@@ -35,7 +35,6 @@ st.set_page_config(
 from frontend.styles  import inject_css
 from frontend.helpers import init_session
 from frontend.sidebar import render_sidebar
-from frontend.results import render_results
 from frontend.chat    import render_chat
 from config import AzureOpenAIConfig, EmbeddingConfig
 
@@ -59,13 +58,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── Results section (shown after analysis completes) ─────────────────────────
-if st.session_state.comparison is not None:
-    st.divider()
-    render_results()
-
-# ── Chat interface ────────────────────────────────────────────────────────────
-st.divider()
+# ── Chat interface (results shown inline inside chat) ────────────────────────
 render_chat()
 
 # ── Footer ────────────────────────────────────────────────────────────────────
