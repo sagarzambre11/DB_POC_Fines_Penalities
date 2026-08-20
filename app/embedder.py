@@ -16,11 +16,24 @@ No URL formation, no endpoint juggling, no provider-specific logic leaks out.
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from config import AzureOpenAIConfig, EmbeddingConfig
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Embedding retry / timeout settings
+# ---------------------------------------------------------------------------
+_EMBED_TIMEOUT_CONNECT: float = float(os.getenv("EMBED_TIMEOUT_CONNECT", "15"))
+_EMBED_TIMEOUT_READ:    float = float(os.getenv("EMBED_TIMEOUT_READ",    "120"))
+_EMBED_TIMEOUT_WRITE:   float = float(os.getenv("EMBED_TIMEOUT_WRITE",   "30"))
+_EMBED_CHUNK_SIZE:      int   = int(os.getenv("EMBED_CHUNK_SIZE",         "50"))
+_EMBED_MAX_RETRIES:     int   = int(os.getenv("EMBED_MAX_RETRIES",         "3"))
 
 # ---------------------------------------------------------------------------
 # Abstract base — the contract every provider must satisfy
@@ -81,15 +94,26 @@ class AzureEmbedder(BaseEmbedder):
     def _build_client(self):
         """Build the correct OpenAI client for the configured Azure endpoint."""
         from openai import AzureOpenAI, OpenAI
+        import httpx
 
         endpoint = AzureOpenAIConfig.ENDPOINT.rstrip("/")
         api_key = AzureOpenAIConfig.API_KEY
+
+        # Explicit timeout to prevent indefinite hangs on slow / remote networks
+        timeout = httpx.Timeout(
+            connect=_EMBED_TIMEOUT_CONNECT,
+            read=_EMBED_TIMEOUT_READ,
+            write=_EMBED_TIMEOUT_WRITE,
+            pool=5.0,
+        )
 
         # services.ai.azure.com uses the OpenAI-compatible surface (/openai/v1/)
         if "services.ai.azure.com" in endpoint:
             return OpenAI(
                 base_url=f"{endpoint}/openai/v1/",
                 api_key=api_key,
+                timeout=timeout,
+                max_retries=0,  # we handle retries ourselves
             )
 
         # Standard Azure OpenAI endpoint
@@ -97,19 +121,61 @@ class AzureEmbedder(BaseEmbedder):
             azure_endpoint=endpoint,
             api_key=api_key,
             api_version=EmbeddingConfig.AZURE_API_VERSION,
+            timeout=timeout,
+            max_retries=0,  # we handle retries ourselves
         )
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """Embed document texts for indexing."""
+        """
+        Embed document texts for indexing.
+
+        Splits large lists into chunks of _EMBED_CHUNK_SIZE and retries
+        each chunk up to _EMBED_MAX_RETRIES times with exponential backoff,
+        so a transient timeout or rate-limit does not abort the whole build.
+        """
         if not texts:
             return []
-        # Azure OpenAI embedding — batch up to 2048 inputs per call
-        response = self._client.embeddings.create(
-            model=self._deployment,
-            input=texts,
-        )
-        # Sort by index to preserve input order
-        return [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
+
+        all_embeddings: list[list[float]] = []
+
+        for chunk_start in range(0, len(texts), _EMBED_CHUNK_SIZE):
+            chunk = texts[chunk_start : chunk_start + _EMBED_CHUNK_SIZE]
+
+            for attempt in range(_EMBED_MAX_RETRIES):
+                try:
+                    response = self._client.embeddings.create(
+                        model=self._deployment,
+                        input=chunk,
+                    )
+                    # Sort by index to preserve input order
+                    chunk_embeddings = [
+                        item.embedding
+                        for item in sorted(response.data, key=lambda x: x.index)
+                    ]
+                    all_embeddings.extend(chunk_embeddings)
+                    break  # success — move to next chunk
+
+                except Exception as exc:
+                    if attempt == _EMBED_MAX_RETRIES - 1:
+                        logger.error(
+                            "Embedding failed after %d attempts for chunk [%d:%d]: %s",
+                            _EMBED_MAX_RETRIES,
+                            chunk_start,
+                            chunk_start + len(chunk),
+                            exc,
+                        )
+                        raise
+                    wait_secs = 2 ** attempt  # 1 s, 2 s, 4 s …
+                    logger.warning(
+                        "Embedding attempt %d/%d failed (%s) — retrying in %ds...",
+                        attempt + 1,
+                        _EMBED_MAX_RETRIES,
+                        exc,
+                        wait_secs,
+                    )
+                    time.sleep(wait_secs)
+
+        return all_embeddings
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a single query string."""
