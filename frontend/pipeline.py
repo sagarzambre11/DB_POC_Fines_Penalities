@@ -18,6 +18,7 @@ Response builders (return markdown strings for chat display):
 import streamlit as st
 
 from app.agents.langgraph_pipeline import run_langgraph_pipeline
+from app.agents.supervisor import answer_followup_question
 from app.comparator import get_overall_assessment
 from app.inventory import get_inventory_summary
 from app.reporter import (
@@ -416,9 +417,12 @@ def handle_chat_message(user_text: str) -> str:
                 "3. Ask me to **run the analysis** or ask any question about the case.")
 
     if done:
-        return (build_gap_response()
-                + "\n\n---\n*You can also ask about: enforcement summary, "
-                "relevant controls, stakeholder signals, unaddressed findings, download report.*")
+        # ── Supervisor Agent: answer follow-up questions using LLM context ──
+        return answer_followup_question(
+            user_question=user_text,
+            extracted_data=st.session_state.extracted_data,
+            comparison=st.session_state.comparison,
+        )
 
     return ("Both files are loaded! Ask me to **run the gap analysis**, or try:\n"
             "- *'What happened in this enforcement case?'*\n"
