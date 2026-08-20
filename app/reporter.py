@@ -1,14 +1,13 @@
 """
 app/reporter.py
 ---------------
-Step 5: Two-layer gap analysis report generation and Excel export.
+Step 5: Controls gap analysis report generation and Excel export.
 
 Produces:
-  - Policy Gap DataFrame   (Layer 1 — primary, shift-left signal)
-  - Control Gap DataFrame  (Layer 2 — operational signal)
+  - Controls Gap DataFrame  (single layer — shift-left signal)
   - Stakeholder Signals DataFrame
   - Unaddressed Findings DataFrame
-  - Downloadable 7-sheet Excel workbook
+  - Downloadable 6-sheet Excel workbook
 """
 
 import io
@@ -20,8 +19,7 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from app.comparator import (
-    get_policy_gap_rows,
-    get_control_gap_rows,
+    get_controls_gap_rows,
     get_stakeholder_signal_rows,
     get_unaddressed_findings_rows,
     get_overall_assessment,
@@ -31,29 +29,15 @@ from app.comparator import (
 # Colour maps
 # ---------------------------------------------------------------------------
 
-POLICY_FILL = {
+CONTROLS_FILL = {
     "Covered":               "C6EFCE",
     "Partially Covered":     "FFEB9C",
     "Potential Gap":         "FFC7CE",
     "Insufficient Evidence": "D9D9D9",
 }
-POLICY_FONT = {
+CONTROLS_FONT = {
     "Covered":               "276221",
     "Partially Covered":     "9C5700",
-    "Potential Gap":         "9C0006",
-    "Insufficient Evidence": "595959",
-}
-CONTROL_FILL = {
-    "Covered":               "C6EFCE",
-    "Partially Covered":     "FFEB9C",
-    "Policy-Only Coverage":  "BDD7EE",
-    "Potential Gap":         "FFC7CE",
-    "Insufficient Evidence": "D9D9D9",
-}
-CONTROL_FONT = {
-    "Covered":               "276221",
-    "Partially Covered":     "9C5700",
-    "Policy-Only Coverage":  "1F4E79",
     "Potential Gap":         "9C0006",
     "Insufficient Evidence": "595959",
 }
@@ -86,27 +70,20 @@ RISK_FILL = {
 # DataFrame builders
 # ---------------------------------------------------------------------------
 
-def build_policy_gap_dataframe(comparison: dict) -> pd.DataFrame:
-    """Build Layer 1 — Policy Gap DataFrame."""
-    rows = get_policy_gap_rows(comparison)
+def build_controls_gap_dataframe(comparison: dict) -> pd.DataFrame:
+    """Build Controls Gap DataFrame (single layer)."""
+    rows = get_controls_gap_rows(comparison)
     cols = [
-        "ID", "Name", "Domain", "Policy Owner",
-        "Policy Coverage", "Rationale", "Enforcement Evidence",
+        "ID", "Name", "Domain", "Controls Owner",
+        "Controls Coverage", "Rationale", "Enforcement Evidence",
         "Shift Left Signal", "Recommended Action",
         "Gap Severity", "Related Themes",
     ]
     return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
 
 
-def build_control_gap_dataframe(comparison: dict) -> pd.DataFrame:
-    """Build Layer 2 — Control Gap DataFrame."""
-    rows = get_control_gap_rows(comparison)
-    cols = [
-        "ID", "Name", "Domain", "Control Owner",
-        "Control Coverage", "Rationale", "Enforcement Evidence",
-        "Recommended Action", "Gap Severity", "Related Themes",
-    ]
-    return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
+# Keep legacy alias so any cached imports still resolve
+build_policy_gap_dataframe = build_controls_gap_dataframe
 
 
 def build_stakeholder_signals_dataframe(comparison: dict) -> pd.DataFrame:
@@ -121,7 +98,7 @@ def build_unaddressed_findings_dataframe(comparison: dict) -> pd.DataFrame:
     rows = get_unaddressed_findings_rows(comparison)
     cols = [
         "Enforcement Theme", "Risk Implication",
-        "Suggested Policy", "Suggested Control", "Suggested Owner",
+        "Suggested Control", "Suggested Owner",
     ]
     return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
 
@@ -129,21 +106,14 @@ def build_unaddressed_findings_dataframe(comparison: dict) -> pd.DataFrame:
 def build_summary_dataframe(comparison: dict) -> pd.DataFrame:
     """Build a summary metrics DataFrame from overall_assessment."""
     a = get_overall_assessment(comparison)
-    pl = a.get("policy_layer_summary", {})
-    cl = a.get("control_layer_summary", {})
+    cl = a.get("controls_layer_summary", {})
     rows = [
         ("Total Items Assessed", a.get("total_assessed", 0)),
-        ("--- POLICY LAYER ---", ""),
-        ("  Policy: Covered", pl.get("covered", 0)),
-        ("  Policy: Partially Covered", pl.get("partially_covered", 0)),
-        ("  Policy: Potential Gap", pl.get("potential_gap", 0)),
-        ("  Policy: Insufficient Evidence", pl.get("insufficient_evidence", 0)),
-        ("--- CONTROL LAYER ---", ""),
-        ("  Control: Covered", cl.get("covered", 0)),
-        ("  Control: Partially Covered", cl.get("partially_covered", 0)),
-        ("  Control: Policy-Only Coverage", cl.get("policy_only", 0)),
-        ("  Control: Potential Gap", cl.get("potential_gap", 0)),
-        ("  Control: Insufficient Evidence", cl.get("insufficient_evidence", 0)),
+        ("--- CONTROLS ---", ""),
+        ("  Controls: Covered", cl.get("covered", 0)),
+        ("  Controls: Partially Covered", cl.get("partially_covered", 0)),
+        ("  Controls: Potential Gap", cl.get("potential_gap", 0)),
+        ("  Controls: Insufficient Evidence", cl.get("insufficient_evidence", 0)),
         ("Overall Risk Rating", a.get("overall_risk_rating", "N/A")),
     ]
     return pd.DataFrame(rows, columns=["Metric", "Value"])
@@ -153,7 +123,7 @@ def build_summary_dataframe(comparison: dict) -> pd.DataFrame:
 # Excel helper utilities
 # ---------------------------------------------------------------------------
 
-def _header_style(ws, row: int, num_cols: int) -> None:
+def _apply_header_style(ws, row: int, num_cols: int) -> None:
     fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     font = Font(bold=True, color="FFFFFF", size=11)
     for col in range(1, num_cols + 1):
@@ -163,18 +133,27 @@ def _header_style(ws, row: int, num_cols: int) -> None:
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
-def _border(cell) -> None:
+_header_style = _apply_header_style
+
+
+def _apply_border(cell) -> None:
     thin = Side(style="thin")
     cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
 
-def _auto_width(ws, min_w: int = 12, max_w: int = 55) -> None:
+_border = _apply_border
+
+
+def _auto_fit_columns(ws, min_w: int = 12, max_w: int = 55) -> None:
     for col in ws.columns:
         col_letter = get_column_letter(col[0].column)
         max_len = max(
             (len(str(c.value)) for c in col if c.value), default=0
         )
         ws.column_dimensions[col_letter].width = max(min_w, min(max_len + 4, max_w))
+
+
+_auto_width = _auto_fit_columns
 
 
 def _colour_cell(cell, fill_hex: str, font_hex: str = "000000", bold: bool = True) -> None:
@@ -195,7 +174,7 @@ def _write_df_to_sheet(
     """Write a DataFrame to a worksheet with optional colour coding."""
     headers = list(df.columns)
     ws.append(headers)
-    _header_style(ws, 1, len(headers))
+    _apply_header_style(ws, 1, len(headers))
 
     class_idx = (headers.index(classification_col) + 1) if classification_col and classification_col in headers else None
     sev_idx = (headers.index(severity_col) + 1) if severity_col and severity_col in headers else None
@@ -211,7 +190,7 @@ def _write_df_to_sheet(
         for ci in range(1, len(headers) + 1):
             cell = ws.cell(row=rn, column=ci)
             cell.alignment = Alignment(wrap_text=True, vertical="top")
-            _border(cell)
+            _apply_border(cell)
 
         if class_idx and fill_map:
             bg = fill_map.get(classification, "FFFFFF")
@@ -230,7 +209,7 @@ def _write_df_to_sheet(
         ws.row_dimensions[rn].height = row_height
 
     ws.freeze_panes = "A2"
-    _auto_width(ws)
+    _auto_fit_columns(ws)
 
 
 # ---------------------------------------------------------------------------
@@ -243,16 +222,15 @@ def generate_excel_report(
     inventory: list[dict],
 ) -> bytes:
     """
-    Generate a 7-sheet Excel workbook with the full two-layer gap analysis.
+    Generate a 6-sheet Excel workbook with the full controls gap analysis.
 
     Sheets:
-      1. Summary              — Overall assessment, shift-left headline, risk rating
-      2. Policy Gap Analysis  — Layer 1: policy coverage per inventory item
-      3. Control Gap Analysis — Layer 2: control coverage per inventory item
-      4. Stakeholder Signals  — Who needs to act, what, and with what priority
-      5. Unaddressed Findings — Enforcement themes with no matching policy or control
-      6. Enforcement Data     — Extracted enforcement intelligence
-      (GRC Inventory appended as sheet 7 for reference)
+      1. Summary               — Overall assessment, shift-left headline, risk rating
+      2. Controls Gap Analysis — Controls coverage per inventory item
+      3. Stakeholder Signals   — Who needs to act, what, and with what priority
+      4. Unaddressed Findings  — Enforcement themes with no matching control
+      5. Enforcement Data      — Extracted enforcement intelligence
+      6. GRC Inventory         — Source inventory for reference
 
     Args:
         comparison:            Dict from comparator.compare_findings_to_inventory().
@@ -274,7 +252,7 @@ def generate_excel_report(
     ws_s = wb.create_sheet("Summary")
 
     ws_s.merge_cells("A1:C1")
-    ws_s["A1"].value = "Regulatory Enforcement Intelligence — Gap Analysis Report"
+    ws_s["A1"].value = "Regulatory Enforcement Intelligence — Controls Gap Analysis Report"
     ws_s["A1"].font = Font(bold=True, size=15, color="1F4E79")
     ws_s["A1"].alignment = Alignment(horizontal="center")
     ws_s.row_dimensions[1].height = 32
@@ -306,25 +284,18 @@ def generate_excel_report(
 
     ws_s.append([])
 
-    # Policy layer summary
-    pl = assessment.get("policy_layer_summary", {})
-    cl = assessment.get("control_layer_summary", {})
-
+    # Controls summary table
+    cl = assessment.get("controls_layer_summary", {})
     ws_s.append(["Layer", "Classification", "Count"])
-    _header_style(ws_s, ws_s.max_row, 3)
+    _apply_header_style(ws_s, ws_s.max_row, 3)
 
-    policy_rows = [
-        ("Policy Layer", "Covered", pl.get("covered", 0), "C6EFCE", "276221"),
-        ("Policy Layer", "Partially Covered", pl.get("partially_covered", 0), "FFEB9C", "9C5700"),
-        ("Policy Layer", "Potential Gap", pl.get("potential_gap", 0), "FFC7CE", "9C0006"),
-        ("Policy Layer", "Insufficient Evidence", pl.get("insufficient_evidence", 0), "D9D9D9", "595959"),
-        ("Control Layer", "Covered", cl.get("covered", 0), "C6EFCE", "276221"),
-        ("Control Layer", "Partially Covered", cl.get("partially_covered", 0), "FFEB9C", "9C5700"),
-        ("Control Layer", "Policy-Only Coverage", cl.get("policy_only", 0), "BDD7EE", "1F4E79"),
-        ("Control Layer", "Potential Gap", cl.get("potential_gap", 0), "FFC7CE", "9C0006"),
-        ("Control Layer", "Insufficient Evidence", cl.get("insufficient_evidence", 0), "D9D9D9", "595959"),
+    summary_rows = [
+        ("Controls", "Covered",              cl.get("covered", 0),               "C6EFCE", "276221"),
+        ("Controls", "Partially Covered",     cl.get("partially_covered", 0),     "FFEB9C", "9C5700"),
+        ("Controls", "Potential Gap",         cl.get("potential_gap", 0),         "FFC7CE", "9C0006"),
+        ("Controls", "Insufficient Evidence", cl.get("insufficient_evidence", 0), "D9D9D9", "595959"),
     ]
-    for layer, label, count, bg, fg in policy_rows:
+    for layer, label, count, bg, fg in summary_rows:
         rn = ws_s.max_row + 1
         ws_s.cell(row=rn, column=1, value=layer)
         ws_s.cell(row=rn, column=2, value=label)
@@ -333,7 +304,7 @@ def generate_excel_report(
             cell = ws_s.cell(row=rn, column=ci)
             cell.fill = PatternFill(start_color=bg, end_color=bg, fill_type="solid")
             cell.font = Font(color=fg, bold=True)
-            _border(cell)
+            _apply_border(cell)
 
     ws_s.append([])
     risk = assessment.get("overall_risk_rating", "N/A")
@@ -353,29 +324,19 @@ def generate_excel_report(
     ws_s.cell(row=exec_row, column=1).alignment = Alignment(wrap_text=True)
     ws_s.merge_cells(start_row=exec_row, start_column=1, end_row=exec_row, end_column=3)
     ws_s.row_dimensions[exec_row].height = 90
-    _auto_width(ws_s)
+    _auto_fit_columns(ws_s)
 
-    # ── Sheet 2: Policy Gap Analysis ─────────────────────────────────────────
-    ws_p = wb.create_sheet("Policy Gap Analysis")
-    policy_df = build_policy_gap_dataframe(comparison)
+    # ── Sheet 2: Controls Gap Analysis ──────────────────────────────────────
+    ws_c = wb.create_sheet("Controls Gap Analysis")
+    controls_df = build_controls_gap_dataframe(comparison)
     _write_df_to_sheet(
-        ws_p, policy_df,
-        classification_col="Policy Coverage",
-        fill_map=POLICY_FILL, font_map=POLICY_FONT,
+        ws_c, controls_df,
+        classification_col="Controls Coverage",
+        fill_map=CONTROLS_FILL, font_map=CONTROLS_FONT,
         severity_col="Gap Severity",
     )
 
-    # ── Sheet 3: Control Gap Analysis ────────────────────────────────────────
-    ws_c = wb.create_sheet("Control Gap Analysis")
-    control_df = build_control_gap_dataframe(comparison)
-    _write_df_to_sheet(
-        ws_c, control_df,
-        classification_col="Control Coverage",
-        fill_map=CONTROL_FILL, font_map=CONTROL_FONT,
-        severity_col="Gap Severity",
-    )
-
-    # ── Sheet 4: Stakeholder Signals ─────────────────────────────────────────
+    # ── Sheet 3: Stakeholder Signals ─────────────────────────────────────────
     ws_ss = wb.create_sheet("Stakeholder Signals")
     signals_df = build_stakeholder_signals_dataframe(comparison)
     if not signals_df.empty:
@@ -387,13 +348,13 @@ def generate_excel_report(
     else:
         ws_ss["A1"] = "No stakeholder signals generated."
 
-    # ── Sheet 5: Unaddressed Findings ────────────────────────────────────────
+    # ── Sheet 4: Unaddressed Findings ────────────────────────────────────────
     ws_u = wb.create_sheet("Unaddressed Findings")
     unaddressed_df = build_unaddressed_findings_dataframe(comparison)
     if not unaddressed_df.empty:
         headers_u = list(unaddressed_df.columns)
         ws_u.append(headers_u)
-        _header_style(ws_u, 1, len(headers_u))
+        _apply_header_style(ws_u, 1, len(headers_u))
         for _, row in unaddressed_df.iterrows():
             ws_u.append(list(row))
             rn = ws_u.max_row
@@ -401,17 +362,17 @@ def generate_excel_report(
                 cell = ws_u.cell(row=rn, column=ci)
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
                 cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-                _border(cell)
+                _apply_border(cell)
             ws_u.row_dimensions[rn].height = 60
         ws_u.freeze_panes = "A2"
-        _auto_width(ws_u)
+        _auto_fit_columns(ws_u)
     else:
         ws_u["A1"] = "No unaddressed findings — all enforcement themes are covered by the inventory."
 
-    # ── Sheet 6: Enforcement Data ────────────────────────────────────────────
+    # ── Sheet 5: Enforcement Data ────────────────────────────────────────────
     ws_e = wb.create_sheet("Enforcement Data")
     ws_e.append(["Field", "Value"])
-    _header_style(ws_e, 1, 2)
+    _apply_header_style(ws_e, 1, 2)
 
     enf_rows = [
         ("Regulator", regulator.get("name", "")),
@@ -447,26 +408,26 @@ def generate_excel_report(
         ws_e.cell(row=rn, column=1, value=label).font = Font(bold=True)
         cell_v = ws_e.cell(row=rn, column=2, value=str(value))
         cell_v.alignment = Alignment(wrap_text=True, vertical="top")
-        _border(ws_e.cell(row=rn, column=1))
-        _border(ws_e.cell(row=rn, column=2))
-    _auto_width(ws_e)
+        _apply_border(ws_e.cell(row=rn, column=1))
+        _apply_border(ws_e.cell(row=rn, column=2))
+    _auto_fit_columns(ws_e)
 
-    # ── Sheet 7: GRC Inventory ───────────────────────────────────────────────
+    # ── Sheet 6: GRC Inventory ───────────────────────────────────────────────
     ws_inv = wb.create_sheet("GRC Inventory")
     if inventory:
         inv_headers = list(inventory[0].keys())
         ws_inv.append(inv_headers)
-        _header_style(ws_inv, 1, len(inv_headers))
+        _apply_header_style(ws_inv, 1, len(inv_headers))
         for ctrl in inventory:
             ws_inv.append([ctrl.get(h, "") for h in inv_headers])
             rn = ws_inv.max_row
             for ci in range(1, len(inv_headers) + 1):
                 cell = ws_inv.cell(row=rn, column=ci)
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
-                _border(cell)
+                _apply_border(cell)
             ws_inv.row_dimensions[rn].height = 40
         ws_inv.freeze_panes = "A2"
-        _auto_width(ws_inv)
+        _auto_fit_columns(ws_inv)
 
     # ── Save to bytes ────────────────────────────────────────────────────────
     buf = io.BytesIO()

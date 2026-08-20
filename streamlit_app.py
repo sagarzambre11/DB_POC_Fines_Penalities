@@ -6,8 +6,8 @@ Regulatory Enforcement Intelligence PoC — v2
 AI-powered, regulator-agnostic gap analysis pipeline:
   Step 1 — Upload ANY enforcement document (FCA, DFS, SEC, MAS, etc.)
   Step 2 — Extract structured intelligence via Azure OpenAI GPT-4o
-  Step 3 — Load GRC inventory (dual-role: Policy Corpus + Control Inventory)
-  Step 4 — Run two-layer LLM gap analysis (Policy Layer + Control Layer)
+  Step 3 — Load GRC inventory (Controls Inventory)
+  Step 4 — Run Controls Gap Analysis
   Step 5 — View shift-left signals, stakeholder alerts, and download report
 """
 
@@ -24,8 +24,7 @@ from app.inventory import (
 )
 from app.comparator import compare_findings_to_inventory, get_overall_assessment
 from app.reporter import (
-    build_policy_gap_dataframe,
-    build_control_gap_dataframe,
+    build_controls_gap_dataframe,
     build_stakeholder_signals_dataframe,
     build_unaddressed_findings_dataframe,
     build_summary_dataframe,
@@ -79,8 +78,8 @@ with st.sidebar:
     st.markdown("""
 1. 📄 Upload Enforcement Document
 2. 🔍 Extract Intelligence (LLM)
-3. 📊 Load GRC Inventory
-4. 🤖 Run Two-Layer Gap Analysis
+3. 📊 Load GRC Inventory (Controls)
+4. 🤖 Run Controls Gap Analysis
 5. 📥 View Results & Download
 """)
     st.divider()
@@ -106,7 +105,7 @@ with st.sidebar:
                 f"Total: `{ext_usage.get('total_tokens', 0):,}`"
             )
         if cmp_usage:
-            st.markdown("**Step 4 — Gap Analysis**")
+            st.markdown("**Step 4 — Controls Gap Analysis**")
             st.markdown(
                 f"Input: `{cmp_usage.get('prompt_tokens', 0):,}` &nbsp;|&nbsp; "
                 f"Output: `{cmp_usage.get('completion_tokens', 0):,}` &nbsp;|&nbsp; "
@@ -126,7 +125,7 @@ with st.sidebar:
 st.markdown('<div class="main-title">🏦 Regulatory Enforcement Intelligence</div>',
             unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">AI-powered gap analysis between enforcement actions and your '
+    '<div class="sub-title">AI-powered controls gap analysis between enforcement actions and your '
     'GRC inventory — works for any regulator (FCA, DFS, SEC, MAS, FINRA...) '
     'and any compliance domain</div>',
     unsafe_allow_html=True)
@@ -255,9 +254,9 @@ else:
 st.divider()
 
 # ---------------------------------------------------------------------------
-# STEP 3 — GRC Inventory (dual-role)
+# STEP 3 — GRC Inventory (Controls)
 # ---------------------------------------------------------------------------
-st.markdown('<div class="step-header">Step 3 — GRC Inventory (Policy Corpus + Control Inventory)</div>',
+st.markdown('<div class="step-header">Step 3 — GRC Inventory (Controls)</div>',
             unsafe_allow_html=True)
 
 if st.session_state.inventory is None:
@@ -269,15 +268,15 @@ if st.session_state.inventory is None:
 if st.session_state.inventory:
     inv_summary = get_inventory_summary(st.session_state.inventory)
     ca, cb, cc = st.columns(3)
-    ca.metric("Total Items", inv_summary["Total Controls"])
+    ca.metric("Total Controls", inv_summary["Total Controls"])
     cb.metric("Domain(s)", ", ".join(inv_summary["Regulatory Domains"]))
     cc.metric("Status", " | ".join(f"{k}: {v}" for k, v in
                                    inv_summary["Status Breakdown"].items()))
 
     st.info(
-        "💡 **Dual-role inventory:** Each row serves as both a **Policy** "
-        "(intent/objective — primary mapping) and an **Operational Control** "
-        "(mechanism — secondary mapping). This enables the shift-left analysis."
+        "💡 **Controls inventory:** Each row represents a **Control** "
+        "(objective, mechanism, and operational detail) mapped against "
+        "enforcement findings to identify gaps and shift-left signals."
     )
 
     with st.expander("📊 GRC Inventory Preview", expanded=False):
@@ -287,9 +286,9 @@ if st.session_state.inventory:
 st.divider()
 
 # ---------------------------------------------------------------------------
-# STEP 4 — Two-Layer Gap Analysis
+# STEP 4 — Controls Gap Analysis
 # ---------------------------------------------------------------------------
-st.markdown('<div class="step-header">Step 4 — Two-Layer Gap Analysis (Policy + Control)</div>',
+st.markdown('<div class="step-header">Step 4 — Controls Gap Analysis</div>',
             unsafe_allow_html=True)
 
 step4_ready = (
@@ -301,11 +300,9 @@ if not step4_ready:
     st.info("⬆️ Complete Steps 1–3 before running the gap analysis.")
 else:
     st.markdown("""
-    **Layer 1 — Policy Coverage** *(primary, shift-left signal)*
-    Assesses whether your firm's **policy intent** would have mandated the right governance.
-
-    **Layer 2 — Control Coverage** *(secondary, operational signal)*
-    Assesses whether an **operational control** would have detected or prevented the failure.
+    **Controls Coverage** *(shift-left signal)*
+    Assesses whether your firm's **Controls** (objective, statement, and operational mechanism)
+    would have mandated the right governance and detected or prevented the enforcement failure.
     """)
 
     col1, _ = st.columns([1, 3])
@@ -371,66 +368,62 @@ else:
     risk = assessment.get("overall_risk_rating", "N/A")
     risk_icon = {"Low": "🟢", "Medium": "🟡", "High": "🟠", "Critical": "🔴"}.get(risk, "⚪")
 
-    pl_s = assessment.get("policy_layer_summary", {})
-    cl_s = assessment.get("control_layer_summary", {})
+    cl_s = assessment.get("controls_layer_summary", {})
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Assessed", assessment.get("total_assessed", 0))
-    c2.metric("Policy Gaps 🔴", pl_s.get("potential_gap", 0))
-    c3.metric("Control Gaps 🔴", cl_s.get("potential_gap", 0))
-    c4.metric("Partially Covered 🟡",
-              pl_s.get("partially_covered", 0) + cl_s.get("partially_covered", 0))
-    c5.metric(f"{risk_icon} Risk Rating", risk)
+    c2.metric("Controls Gaps 🔴", cl_s.get("potential_gap", 0))
+    c3.metric("Partially Covered 🟡", cl_s.get("partially_covered", 0))
+    c4.metric(f"{risk_icon} Risk Rating", risk)
 
     exec_summary = assessment.get("executive_summary", "")
     if exec_summary:
         st.info(f"**Executive Summary:** {exec_summary}")
 
-    # ── Two-Layer Results Tabs ───────────────────────────────────────────────
-    tab_policy, tab_control, tab_signals, tab_unaddressed = st.tabs([
-        "📜 Policy Layer (Primary)",
-        "🔧 Control Layer (Secondary)",
+    # ── Results Tabs ─────────────────────────────────────────────────────────
+    tab_controls, tab_signals, tab_unaddressed = st.tabs([
+        "📋 Controls Gap Analysis",
         "🔔 Stakeholder Signals",
         "⚠️ Unaddressed Findings",
     ])
 
-    # --- Policy Layer Tab ---
-    with tab_policy:
-        st.markdown("#### � Policy Coverage — Shift-Left Analysis")
+    # --- Controls Gap Analysis Tab ---
+    with tab_controls:
+        st.markdown("#### 📋 Controls Coverage — Gap Analysis")
         st.caption(
-            "Assesses whether existing **policy intent** (objectives/statements) "
-            "would have mandated the governance that was absent in the enforcement case."
+            "Assesses whether existing **Controls** (objectives, statements, and operational "
+            "mechanisms) would have mandated the governance absent in the enforcement case."
         )
 
-        policy_df = build_policy_gap_dataframe(comparison)
+        controls_df = build_controls_gap_dataframe(comparison)
 
-        policy_labels = ["Covered", "Partially Covered", "Potential Gap", "Insufficient Evidence"]
-        sel_policy = st.multiselect(
-            "Filter by Policy Coverage:",
-            options=policy_labels,
-            default=policy_labels,
-            key="filter_policy",
+        controls_labels = ["Covered", "Partially Covered", "Potential Gap", "Insufficient Evidence"]
+        sel_controls = st.multiselect(
+            "Filter by Controls Coverage:",
+            options=controls_labels,
+            default=controls_labels,
+            key="filter_controls",
         )
-        filtered_policy = policy_df[policy_df["Policy Coverage"].isin(sel_policy)]
+        filtered_controls = controls_df[controls_df["Controls Coverage"].isin(sel_controls)]
 
-        def _style_policy(val):
+        def _style_controls(val):
             m = {
-                "Covered": "background-color:#d4edda;color:#276221;font-weight:bold",
-                "Partially Covered": "background-color:#fff3cd;color:#9C5700;font-weight:bold",
-                "Potential Gap": "background-color:#f8d7da;color:#9C0006;font-weight:bold",
+                "Covered":               "background-color:#d4edda;color:#276221;font-weight:bold",
+                "Partially Covered":     "background-color:#fff3cd;color:#9C5700;font-weight:bold",
+                "Potential Gap":         "background-color:#f8d7da;color:#9C0006;font-weight:bold",
                 "Insufficient Evidence": "background-color:#e2e3e5;color:#595959;font-weight:bold",
             }
             return m.get(val, "")
 
         st.dataframe(
-            filtered_policy.style.map(_style_policy, subset=["Policy Coverage"]),
+            filtered_controls.style.map(_style_controls, subset=["Controls Coverage"]),
             use_container_width=True, hide_index=True, height=400,
         )
 
-        # Shift-left signal callouts
-        gap_items = filtered_policy[filtered_policy["Policy Coverage"] == "Potential Gap"]
+        # Shift-left signal callouts for gaps
+        gap_items = filtered_controls[filtered_controls["Controls Coverage"] == "Potential Gap"]
         if not gap_items.empty:
-            st.markdown("##### ⚡ Shift-Left Signals for Policy Gaps")
+            st.markdown("##### ⚡ Shift-Left Signals for Controls Gaps")
             for _, row in gap_items.iterrows():
                 sig = row.get("Shift Left Signal", "")
                 if sig:
@@ -439,41 +432,6 @@ else:
                         f'<br>{sig}</div>',
                         unsafe_allow_html=True,
                     )
-
-    # --- Control Layer Tab ---
-    with tab_control:
-        st.markdown("#### Control Coverage — Operational Analysis")
-        st.caption(
-            "Assesses whether an **operational control** (mechanism/procedure) "
-            "would have detected or prevented the enforcement failure."
-        )
-
-        control_df = build_control_gap_dataframe(comparison)
-
-        control_labels = ["Covered", "Partially Covered", "Policy-Only Coverage",
-                          "Potential Gap", "Insufficient Evidence"]
-        sel_control = st.multiselect(
-            "Filter by Control Coverage:",
-            options=control_labels,
-            default=control_labels,
-            key="filter_control",
-        )
-        filtered_control = control_df[control_df["Control Coverage"].isin(sel_control)]
-
-        def _style_control(val):
-            m = {
-                "Covered": "background-color:#d4edda;color:#276221;font-weight:bold",
-                "Partially Covered": "background-color:#fff3cd;color:#9C5700;font-weight:bold",
-                "Policy-Only Coverage": "background-color:#cce5ff;color:#1F4E79;font-weight:bold",
-                "Potential Gap": "background-color:#f8d7da;color:#9C0006;font-weight:bold",
-                "Insufficient Evidence": "background-color:#e2e3e5;color:#595959;font-weight:bold",
-            }
-            return m.get(val, "")
-
-        st.dataframe(
-            filtered_control.style.map(_style_control, subset=["Control Coverage"]),
-            use_container_width=True, hide_index=True, height=400,
-        )
 
     # --- Stakeholder Signals Tab ---
     with tab_signals:
@@ -484,9 +442,8 @@ else:
 
         signals_df = build_stakeholder_signals_dataframe(comparison)
         if signals_df.empty:
-            st.success("No stakeholder signals — all items are fully covered.")
+            st.success("No stakeholder signals — all controls are fully covered.")
         else:
-            # Priority filter
             priorities = ["High", "Medium", "Low"]
             sel_pri = st.multiselect(
                 "Filter by Priority:", options=priorities, default=priorities,
@@ -507,7 +464,6 @@ else:
                 use_container_width=True, hide_index=True, height=400,
             )
 
-            # High priority signal callouts
             high_signals = filtered_signals[filtered_signals["Priority"] == "High"]
             if not high_signals.empty:
                 st.markdown("##### 🔴 High Priority Actions")
@@ -522,20 +478,20 @@ else:
     with tab_unaddressed:
         st.markdown("#### Unaddressed Enforcement Findings")
         st.caption(
-            "Enforcement themes or root causes with **no matching policy or control** "
-            "in the current inventory. New policies and/or controls may be required."
+            "Enforcement themes or root causes with **no matching control** "
+            "in the current inventory. New controls may be required."
         )
 
         unaddressed_df = build_unaddressed_findings_dataframe(comparison)
         if unaddressed_df.empty:
             st.success(
                 "All enforcement themes are addressed by at least one "
-                "policy or control in the inventory."
+                "control in the inventory."
             )
         else:
             st.warning(
                 f"**{len(unaddressed_df)} enforcement theme(s)** have no matching "
-                "policy or control. Review the suggested policies and controls below."
+                "control. Review the suggested controls below."
             )
             st.dataframe(unaddressed_df, use_container_width=True, hide_index=True)
 
@@ -558,7 +514,7 @@ else:
             type="primary",
         )
         st.caption(
-            "Report contains 7 sheets: Summary, Policy Gap Analysis, Control Gap Analysis, "
+            "Report contains 6 sheets: Summary, Controls Gap Analysis, "
             "Stakeholder Signals, Unaddressed Findings, Enforcement Data, GRC Inventory."
         )
     except Exception as e:

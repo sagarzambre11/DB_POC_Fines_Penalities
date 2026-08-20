@@ -1,14 +1,13 @@
 """
 app/inventory.py
 ----------------
-Step 3: GRC Control Inventory loader with dual-role parsing.
+Step 3: GRC Controls Inventory loader.
 
-The GRC inventory serves TWO roles in the analysis:
-  - POLICY LAYER  (primary):  control_objective + process → treated as policy intent
-  - CONTROL LAYER (secondary): control_description + control_type → operational control
+The GRC inventory represents Controls in the analysis:
+  - CONTROLS: control_objective + control_description + process → full control context
 
-This dual-role approach supports the "shift left" value narrative:
-  map enforcement findings → policies first, then controls.
+Each control is assessed as a single unit against enforcement findings
+to identify gaps and generate shift-left signals.
 """
 
 import pandas as pd
@@ -113,33 +112,17 @@ def get_inventory_summary(inventory: list[dict]) -> dict:
 
 def inventory_to_policy_prompt_text(inventory: list[dict]) -> str:
     """
-    Serialise the inventory as a POLICY CORPUS for LLM prompt injection.
+    Serialise the inventory as a CONTROLS CORPUS for LLM prompt injection.
 
-    Each row is represented at the policy/intent level:
-      - Policy ID  = control_id
-      - Policy Name = control_name
-      - Policy Statement = control_objective  ← PRIMARY for policy mapping
-      - Policy Domain = regulatory_domain
-      - Policy Owner = owner
-      - Process Area = process
+    Kept for backward compatibility — delegates to inventory_to_combined_prompt_text.
 
     Args:
         inventory: List of control dicts from load_inventory().
 
     Returns:
-        Formatted multi-line string representing all policies.
+        Formatted multi-line string representing all controls.
     """
-    lines = []
-    for ctrl in inventory:
-        lines.append(
-            f"[POLICY: {ctrl['control_id']}] {ctrl['control_name']}\n"
-            f"  Policy Statement : {ctrl['control_objective']}\n"
-            f"  Process Area     : {ctrl['process']}\n"
-            f"  Domain           : {ctrl['regulatory_domain']}\n"
-            f"  Policy Owner     : {ctrl['owner']}\n"
-            f"  Status           : {ctrl['status']}\n"
-        )
-    return "\n".join(lines)
+    return inventory_to_combined_prompt_text(inventory)
 
 
 def inventory_to_control_prompt_text(inventory: list[dict]) -> str:
@@ -178,23 +161,23 @@ def inventory_to_control_prompt_text(inventory: list[dict]) -> str:
 
 def inventory_to_combined_prompt_text(inventory: list[dict]) -> str:
     """
-    Serialise the inventory showing BOTH policy intent AND control detail.
+    Serialise the inventory as CONTROLS for LLM prompt injection.
 
-    Used for the unified two-layer comparison where the LLM assesses
-    both policy coverage and control coverage in a single pass.
+    Used for the controls gap analysis where the LLM assesses
+    controls coverage in a single pass.
 
     Args:
         inventory: List of control dicts from load_inventory().
 
     Returns:
-        Formatted multi-line string showing combined policy + control view.
+        Formatted multi-line string showing full control context.
     """
     lines = []
     for ctrl in inventory:
         lines.append(
             f"[ID: {ctrl['control_id']}] {ctrl['control_name']}\n"
-            f"  POLICY INTENT (primary)  : {ctrl['control_objective']}\n"
-            f"  OPERATIONAL CONTROL      : {ctrl['control_description']}\n"
+            f"  CONTROL OBJECTIVE        : {ctrl['control_objective']}\n"
+            f"  CONTROL MECHANISM        : {ctrl['control_description']}\n"
             f"  Type         : {ctrl['control_type']} | "
             f"Frequency: {ctrl['frequency']} | "
             f"Trigger: {ctrl['trigger']}\n"
